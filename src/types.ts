@@ -3,6 +3,7 @@ export interface Session {
   name: string;
   status: string;
   working_dir: string;
+  session_type: string;
 }
 
 export type LayoutMode = "single" | "grid";

@@ -1,24 +1,57 @@
+import { useState, useRef, useEffect } from "react";
 import type { Session, LayoutMode } from "../types";
+import NotificationBadge from "./NotificationBadge";
 
 interface SidebarProps {
   sessions: Session[];
   activeSessionIds: string[];
   layout: LayoutMode;
+  questionSessionIds: string[];
   onLayoutChange: (layout: LayoutMode) => void;
   onCreateSession: () => void;
   onSelectSession: (id: string) => void;
   onCloseSession: (id: string) => void;
+  onRenameSession: (id: string, name: string) => void;
 }
 
 export default function Sidebar({
   sessions,
   activeSessionIds,
   layout,
+  questionSessionIds,
   onLayoutChange,
   onCreateSession,
   onSelectSession,
   onCloseSession,
+  onRenameSession,
 }: SidebarProps) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingId && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editingId]);
+
+  const startRename = (session: Session) => {
+    setEditingId(session.id);
+    setEditValue(session.name);
+  };
+
+  const commitRename = () => {
+    if (editingId && editValue.trim()) {
+      onRenameSession(editingId, editValue.trim());
+    }
+    setEditingId(null);
+  };
+
+  const cancelRename = () => {
+    setEditingId(null);
+  };
+
   return (
     <aside className="w-56 bg-surface border-r border-border flex flex-col h-full shrink-0">
       {/* Header */}
@@ -79,7 +112,33 @@ export default function Sidebar({
                         : "bg-text-muted"
                     }`}
                   />
-                  <span className="text-sm truncate">{session.name}</span>
+                  {editingId === session.id ? (
+                    <input
+                      ref={inputRef}
+                      value={editValue}
+                      onChange={(e) => setEditValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitRename();
+                        if (e.key === "Escape") cancelRename();
+                      }}
+                      onBlur={commitRename}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-sm bg-bg border border-border rounded px-1 py-0 w-full min-w-0 outline-none focus:border-accent"
+                    />
+                  ) : (
+                    <span
+                      className="text-sm truncate"
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        startRename(session);
+                      }}
+                    >
+                      {session.name}
+                    </span>
+                  )}
+                  {questionSessionIds.includes(session.id) && (
+                    <NotificationBadge />
+                  )}
                 </div>
                 <button
                   onClick={(e) => {

@@ -12,6 +12,7 @@ pub struct SessionInfo {
     pub name: String,
     pub status: String,
     pub working_dir: String,
+    pub session_type: String,
 }
 
 struct Session {
@@ -37,6 +38,7 @@ impl PtyManager {
         &self,
         name: String,
         working_dir: Option<String>,
+        session_type: String,
     ) -> Result<SessionInfo, String> {
         let pty_system = native_pty_system();
         let size = PtySize {
@@ -54,9 +56,16 @@ impl PtyManager {
             std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
         });
 
-        let mut cmd = CommandBuilder::new("bash");
-        cmd.args(["-l"]);
-        cmd.cwd(&cwd);
+        let cmd = if session_type == "claude" {
+            let mut c = CommandBuilder::new("claude");
+            c.cwd(&cwd);
+            c
+        } else {
+            let mut c = CommandBuilder::new("bash");
+            c.args(["-l"]);
+            c.cwd(&cwd);
+            c
+        };
 
         let child = pair
             .slave
@@ -69,6 +78,7 @@ impl PtyManager {
             name,
             status: "running".to_string(),
             working_dir: cwd,
+            session_type,
         };
 
         // Spawn reader thread to emit PTY output to frontend
@@ -109,7 +119,27 @@ impl PtyManager {
                 }
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app.emit(&event_name, data);
+                    let _ = app.emit(&event_name, &data);
+
+                    // Detect question patterns and emit notification
+                    let lower = data.to_lowercase();
+                    let has_question = data.contains("(y/n)")
+                        || data.contains("(Y/n)")
+                        || data.contains("[Y/n]")
+                        || data.contains("[y/N]")
+                        || lower.contains("do you want")
+                        || lower.contains("would you like")
+                        || lower.contains("allow")
+                        || lower.contains("approve")
+                        || data.lines().any(|line| {
+                            let trimmed = line.trim();
+                            trimmed.ends_with('?') && trimmed.len() > 2
+                        });
+
+                    if has_question {
+                        let question_event = format!("session-question-{}", session_id);
+                        let _ = app.emit(&question_event, &data);
+                    }
                 }
                 Err(_) => {
                     let _ = app.emit(&format!("session-exited-{}", session_id), ());

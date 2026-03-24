@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -22,6 +22,44 @@ export default function TerminalPane({
   const termRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragOver(false);
+
+      const files = e.dataTransfer.files;
+      if (files.length === 0) return;
+
+      const paths: string[] = [];
+      for (let i = 0; i < files.length; i++) {
+        const path = (files[i] as File & { path?: string }).path;
+        if (path) {
+          paths.push(`"${path}"`);
+        }
+      }
+
+      if (paths.length > 0) {
+        const data = paths.join(" ");
+        invoke("write_to_session", { id: sessionId, data }).catch(() => {});
+      }
+    },
+    [sessionId]
+  );
 
   const handleResize = useCallback(() => {
     const fitAddon = fitAddonRef.current;
@@ -129,7 +167,12 @@ export default function TerminalPane({
   }, [sessionId, handleResize]);
 
   return (
-    <div className="flex flex-col bg-bg min-h-0">
+    <div
+      className={`flex flex-col bg-bg min-h-0 transition-shadow ${isDragOver ? "ring-2 ring-indigo-500/50" : ""}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {showControls && (
         <div className="flex items-center justify-end gap-1 px-2 py-1 bg-surface border-b border-border">
           <button

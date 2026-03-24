@@ -6,10 +6,6 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "shell:default",
-    {
-      "identifier": "core:event:default",
-      "allow": [{ "event": "pty-output-*" }, { "event": "session-*" }]
-    }
+    "shell:default"
   ]
 }

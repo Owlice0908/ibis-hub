@@ -11,8 +11,10 @@ fn create_session(
     state: State<'_, PtyState>,
     name: String,
     working_dir: Option<String>,
+    session_type: Option<String>,
 ) -> Result<SessionInfo, String> {
-    state.create_session(name, working_dir)
+    let stype = session_type.unwrap_or_else(|| "shell".to_string());
+    state.create_session(name, working_dir, stype)
 }
 
 #[tauri::command]
