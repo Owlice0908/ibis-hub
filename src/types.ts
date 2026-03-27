@@ -6,4 +6,4 @@ export interface Session {
   session_type: string;
 }
 
-export type LayoutMode = "single" | "grid";
+export type LayoutMode = "single" | "focus" | "grid";

@@ -2,81 +2,102 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalPaneProps {
   sessionId: string;
+  sessionName: string;
   showControls: boolean;
+  isVisible: boolean;
+  wsSend: (msg: any) => void;
+  wsOnMessage: (handler: (msg: any) => void) => () => void;
   onDetach: () => void;
   onClose: () => void;
 }
 
 export default function TerminalPane({
   sessionId,
+  sessionName,
   showControls,
+  isVisible,
+  wsSend,
+  wsOnMessage,
   onDetach,
   onClose,
 }: TerminalPaneProps) {
   const termRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const [isDragOver, setIsDragOver] = useState(false);
-
-  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setIsDragOver(false);
-
-      const files = e.dataTransfer.files;
-      if (files.length === 0) return;
-
-      const paths: string[] = [];
-      for (let i = 0; i < files.length; i++) {
-        const path = (files[i] as File & { path?: string }).path;
-        if (path) {
-          paths.push(`"${path}"`);
-        }
-      }
-
-      if (paths.length > 0) {
-        const data = paths.join(" ");
-        invoke("write_to_session", { id: sessionId, data }).catch(() => {});
-      }
-    },
-    [sessionId]
-  );
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const visibleRef = useRef(isVisible);
+  const bufferedDataRef = useRef("");
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepthRef = useRef(0);
+  const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB
+  const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB max buffer for hidden terminals
 
   const handleResize = useCallback(() => {
-    const fitAddon = fitAddonRef.current;
-    const terminal = terminalRef.current;
-    if (fitAddon && terminal) {
-      try {
-        fitAddon.fit();
-        invoke("resize_session", {
-          id: sessionId,
-          cols: terminal.cols,
-          rows: terminal.rows,
-        }).catch(() => {});
-      } catch {
-        // ignore fit errors during mount/unmount
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    resizeTimerRef.current = setTimeout(() => {
+      const fitAddon = fitAddonRef.current;
+      const terminal = terminalRef.current;
+      const container = termRef.current;
+      if (fitAddon && terminal && container) {
+        // Skip resize when the pane is hidden offscreen (e.g. 1x1px)
+        const rect = container.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10) return;
+        try {
+          fitAddon.fit();
+          const cols = Math.max(terminal.cols, 20);
+          const rows = Math.max(terminal.rows, 4);
+          if (cols !== terminal.cols || rows !== terminal.rows) {
+            terminal.resize(cols, rows);
+          }
+          wsSend({ type: "resize", id: sessionId, cols, rows });
+        } catch {}
       }
+    }, 50);
+  }, [sessionId, wsSend]);
+
+  // Upload dropped file to server, get path back, send to PTY
+  const handleFileDrop = useCallback((files: FileList) => {
+    Array.from(files).forEach((file) => {
+      if (file.size > MAX_UPLOAD_SIZE) {
+        console.warn(`File too large (${(file.size / 1024 / 1024).toFixed(1)}MB): ${file.name}`);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(",")[1];
+        wsSend({
+          type: "upload_file",
+          name: file.name,
+          data: base64,
+          sessionId,
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+  }, [wsSend, sessionId]);
+
+  // Flush buffered data, refit, and scroll to bottom when becoming visible
+  useEffect(() => {
+    visibleRef.current = isVisible;
+    if (isVisible && terminalRef.current) {
+      const terminal = terminalRef.current;
+      if (bufferedDataRef.current) {
+        terminal.write(bufferedDataRef.current);
+        bufferedDataRef.current = "";
+      }
+      requestAnimationFrame(() => {
+        try {
+          fitAddonRef.current?.fit();
+        } catch {}
+        terminal.scrollToBottom();
+      });
     }
-  }, [sessionId]);
+  }, [isVisible]);
 
   useEffect(() => {
     if (!termRef.current) return;
@@ -86,7 +107,7 @@ export default function TerminalPane({
         background: "#0f0f0f",
         foreground: "#e5e5e5",
         cursor: "#e5e5e5",
-        selectionBackground: "#6366f150",
+        selectionBackground: "#6366f1aa",
         black: "#0f0f0f",
         red: "#ef4444",
         green: "#22c55e",
@@ -104,94 +125,205 @@ export default function TerminalPane({
         brightCyan: "#22d3ee",
         brightWhite: "#ffffff",
       },
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace",
-      fontSize: 13,
+      fontFamily: "'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Source Han Mono', 'Noto Sans Mono CJK JP', 'MS Gothic', monospace",
+      fontSize: 14,
       lineHeight: 1.2,
-      cursorBlink: true,
+      cursorBlink: false,
       cursorStyle: "bar",
-      scrollback: 10000,
+      scrollback: 2000,
       allowProposedApi: true,
+      rightClickSelectsWord: true,
+      smoothScrollDuration: 0,
+    });
+
+    // Copy/paste shortcuts (Ctrl+Shift+C/V for Linux/Windows, Cmd+C/V for Mac)
+    const isMac = navigator.platform.toLowerCase().includes("mac");
+    terminal.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      const copyKey = isMac ? (e.metaKey && e.key === "c") : (e.ctrlKey && e.shiftKey && e.key === "C");
+      const pasteKey = isMac ? (e.metaKey && e.key === "v") : (e.ctrlKey && e.shiftKey && e.key === "V");
+      if (copyKey) {
+        const sel = terminal.getSelection();
+        if (sel) navigator.clipboard.writeText(sel);
+        return false;
+      }
+      if (pasteKey) {
+        navigator.clipboard.readText().then((text) => {
+          wsSend({ type: "write", id: sessionId, data: text });
+        }).catch(() => {
+          // Clipboard access denied or unavailable — ignore silently
+        });
+        return false;
+      }
+      return true;
     });
 
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
+    const unicode11Addon = new Unicode11Addon();
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(webLinksAddon);
+    terminal.loadAddon(unicode11Addon);
+    terminal.unicode.activeVersion = "11";
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
+    // Clear container before opening (prevents duplicate terminals from StrictMode remounts)
+    while (termRef.current.firstChild) {
+      termRef.current.removeChild(termRef.current.firstChild);
+    }
     terminal.open(termRef.current);
 
-    // Delay initial fit to ensure DOM is ready
     requestAnimationFrame(() => {
-      fitAddon.fit();
-      invoke("resize_session", {
-        id: sessionId,
-        cols: terminal.cols,
-        rows: terminal.rows,
-      }).catch(() => {});
+      requestAnimationFrame(() => {
+        try {
+          fitAddon.fit();
+          wsSend({
+            type: "resize",
+            id: sessionId,
+            cols: terminal.cols,
+            rows: terminal.rows,
+          });
+        } catch {}
+      });
     });
 
-    // Listen for PTY output
-    const unlistenOutput = listen<string>(
-      `pty-output-${sessionId}`,
-      (event) => {
-        terminal.write(event.payload);
+    // Guard: when effect re-runs or cleans up, mark this instance as dead
+    // so no stale closure can write to a disposed terminal
+    let alive = true;
+
+    // PTY output from server
+    let pendingData = "";
+    let writeScheduled = false;
+    const flushWrite = () => {
+      if (!alive) return;
+      if (pendingData) {
+        terminal.write(pendingData);
+        pendingData = "";
       }
-    );
+      writeScheduled = false;
+    };
 
-    // Listen for session exit
-    const unlistenExit = listen(`session-exited-${sessionId}`, () => {
-      terminal.write("\r\n\x1b[90m[Session ended]\x1b[0m\r\n");
+    const unsubscribe = wsOnMessage((msg: any) => {
+      if (!alive) return;
+      if (msg.type === "pty_output" && msg.id === sessionId) {
+        // Buffer data when hidden, write directly when visible
+        if (!visibleRef.current) {
+          bufferedDataRef.current += msg.data;
+          // Cap buffer to prevent OOM with fast output on hidden terminals
+          if (bufferedDataRef.current.length > MAX_BUFFER_SIZE) {
+            bufferedDataRef.current = bufferedDataRef.current.slice(-MAX_BUFFER_SIZE);
+          }
+          return;
+        }
+        pendingData += msg.data;
+        if (!writeScheduled) {
+          writeScheduled = true;
+          requestAnimationFrame(flushWrite);
+        }
+      }
+      if (msg.type === "session_exited" && msg.id === sessionId) {
+        terminal.write("\r\n\x1b[90m[Session ended]\x1b[0m\r\n");
+      }
+      // File uploaded → send path to PTY
+      if (msg.type === "file_uploaded" && msg.sessionId === sessionId) {
+        const escaped = msg.path.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        wsSend({ type: "write", id: sessionId, data: `"${escaped}" ` });
+      }
     });
 
-    // Send input to PTY
+    // Send user input to server
     const onData = terminal.onData((data) => {
-      invoke("write_to_session", { id: sessionId, data }).catch(() => {});
+      if (!alive) return;
+      wsSend({ type: "write", id: sessionId, data });
     });
 
-    // Resize observer
     const observer = new ResizeObserver(() => handleResize());
     observer.observe(termRef.current);
 
     return () => {
+      alive = false;
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       observer.disconnect();
       onData.dispose();
-      unlistenOutput.then((fn) => fn());
-      unlistenExit.then((fn) => fn());
+      unsubscribe();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [sessionId, handleResize]);
+  }, [sessionId, handleResize, wsSend, wsOnMessage]);
 
   return (
     <div
-      className={`flex flex-col bg-bg min-h-0 transition-shadow ${isDragOver ? "ring-2 ring-indigo-500/50" : ""}`}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      className={`flex flex-col bg-bg min-h-0 h-full relative ${dragOver ? "ring-2 ring-accent ring-inset" : ""}`}
+      onDragEnter={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragDepthRef.current++;
+        setDragOver(true);
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragDepthRef.current--;
+        if (dragDepthRef.current <= 0) {
+          dragDepthRef.current = 0;
+          setDragOver(false);
+        }
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragDepthRef.current = 0;
+        setDragOver(false);
+        if (e.dataTransfer.files.length > 0) {
+          handleFileDrop(e.dataTransfer.files);
+        }
+      }}
     >
-      {showControls && (
-        <div className="flex items-center justify-end gap-1 px-2 py-1 bg-surface border-b border-border">
+      <div className="flex items-center justify-between px-2 py-1 bg-surface border-b border-border">
+        <span className="text-sm text-text-muted font-medium truncate">{sessionName}</span>
+        <div className="flex items-center gap-1 shrink-0">
           <button
-            onClick={onDetach}
-            className="text-xs text-text-muted hover:text-text px-1.5 py-0.5 rounded hover:bg-surface-hover transition-colors"
-            title="Detach from grid"
+            onClick={() => wsSend({ type: "pick_files" })}
+            className="text-base text-accent hover:text-accent-hover px-3 py-1 rounded hover:bg-surface-hover font-medium"
+            title="ファイル選択"
           >
-            ⊟
+            + File
           </button>
-          <button
-            onClick={onClose}
-            className="text-xs text-text-muted hover:text-danger px-1.5 py-0.5 rounded hover:bg-surface-hover transition-colors"
-            title="Close session"
-          >
-            ✕
-          </button>
+          {showControls && (
+            <>
+            <button
+              onClick={onDetach}
+              className="text-xs text-text-muted hover:text-text px-1.5 py-0.5 rounded hover:bg-surface-hover"
+              title="Detach from grid"
+            >
+              ⊟
+            </button>
+            <button
+              onClick={onClose}
+              className="text-xs text-text-muted hover:text-danger px-1.5 py-0.5 rounded hover:bg-surface-hover"
+              title="Close session"
+            >
+              ✕
+            </button>
+            </>
+          )}
+        </div>
+      </div>
+      <div ref={termRef} className="flex-1 min-h-0 overflow-hidden" />
+      {dragOver && (
+        <div className="absolute inset-0 bg-accent/10 flex items-center justify-center pointer-events-none z-10">
+          <div className="bg-surface border border-accent rounded-lg px-6 py-3 text-text font-medium shadow-lg pointer-events-none">
+            Drop files here
+          </div>
         </div>
       )}
-      <div ref={termRef} className="flex-1 min-h-0" />
     </div>
   );
 }

@@ -1,14 +1,16 @@
 import { useState, useRef, useEffect } from "react";
 import type { Session, LayoutMode } from "../types";
+import logoUrl from "../assets/logo.png";
 import NotificationBadge from "./NotificationBadge";
 
 interface SidebarProps {
   sessions: Session[];
   activeSessionIds: string[];
+  focusedSessionId: string | null;
   layout: LayoutMode;
   questionSessionIds: string[];
   onLayoutChange: (layout: LayoutMode) => void;
-  onCreateSession: () => void;
+  onCreateSession: (type?: "claude" | "shell") => void;
   onSelectSession: (id: string) => void;
   onCloseSession: (id: string) => void;
   onRenameSession: (id: string, name: string) => void;
@@ -17,6 +19,7 @@ interface SidebarProps {
 export default function Sidebar({
   sessions,
   activeSessionIds,
+  focusedSessionId,
   layout,
   questionSessionIds,
   onLayoutChange,
@@ -44,8 +47,11 @@ export default function Sidebar({
   const commitRename = () => {
     if (editingId && editValue.trim()) {
       onRenameSession(editingId, editValue.trim());
+      setEditingId(null);
+    } else {
+      // Empty name — revert to original (cancel rename)
+      setEditingId(null);
     }
-    setEditingId(null);
   };
 
   const cancelRename = () => {
@@ -56,33 +62,29 @@ export default function Sidebar({
     <aside className="w-56 bg-surface border-r border-border flex flex-col h-full shrink-0">
       {/* Header */}
       <div className="p-4 border-b border-border">
-        <h1 className="text-lg font-bold text-text tracking-tight">Ibis Hub</h1>
+        <h1 className="text-lg font-bold text-text tracking-tight flex items-center gap-1.5">
+          <img src={logoUrl} alt="" className="w-5 h-5 invert brightness-200" />
+          Ibis Hub
+        </h1>
         <p className="text-xs text-text-muted mt-0.5">Session Manager</p>
       </div>
 
       {/* Layout toggle */}
       <div className="px-3 py-2 border-b border-border">
         <div className="flex gap-1 bg-bg rounded-md p-0.5">
-          <button
-            onClick={() => onLayoutChange("single")}
-            className={`flex-1 text-xs py-1.5 rounded transition-colors ${
-              layout === "single"
-                ? "bg-surface text-text shadow-sm"
-                : "text-text-muted hover:text-text"
-            }`}
-          >
-            Single
-          </button>
-          <button
-            onClick={() => onLayoutChange("grid")}
-            className={`flex-1 text-xs py-1.5 rounded transition-colors ${
-              layout === "grid"
-                ? "bg-surface text-text shadow-sm"
-                : "text-text-muted hover:text-text"
-            }`}
-          >
-            Grid
-          </button>
+          {(["single", "focus", "grid"] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => onLayoutChange(mode)}
+              className={`flex-1 text-xs py-1.5 rounded transition-colors ${
+                layout === mode
+                  ? "bg-surface text-text shadow-sm"
+                  : "text-text-muted hover:text-text"
+              }`}
+            >
+              {mode === "single" ? "Single" : mode === "focus" ? "Focus" : "Grid"}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -97,10 +99,12 @@ export default function Sidebar({
             <div
               key={session.id}
               onClick={() => onSelectSession(session.id)}
-              className={`mx-2 mb-1 px-3 py-2 rounded-md cursor-pointer transition-colors group ${
-                activeSessionIds.includes(session.id)
-                  ? "bg-accent/15 border border-accent/30"
-                  : "hover:bg-surface-hover border border-transparent"
+              className={`mx-2 mb-1 px-3 py-2 rounded-md cursor-pointer group ${
+                focusedSessionId === session.id
+                  ? "bg-accent/20 border border-accent/40"
+                  : activeSessionIds.includes(session.id)
+                    ? "bg-surface-hover border border-border"
+                    : "hover:bg-surface-hover border border-transparent"
               }`}
             >
               <div className="flex items-center justify-between">
@@ -127,7 +131,8 @@ export default function Sidebar({
                     />
                   ) : (
                     <span
-                      className="text-sm truncate"
+                      className="text-[15px] leading-snug truncate"
+                      title={session.name}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
                         startRename(session);
@@ -156,13 +161,19 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* New session button */}
-      <div className="p-3 border-t border-border">
+      {/* New session buttons */}
+      <div className="p-3 border-t border-border flex gap-2">
         <button
-          onClick={onCreateSession}
-          className="w-full py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors font-medium"
+          onClick={() => onCreateSession("claude")}
+          className="flex-1 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors font-medium"
         >
-          + New Session
+          + Claude
+        </button>
+        <button
+          onClick={() => onCreateSession("shell")}
+          className="flex-1 py-2 bg-surface-hover hover:bg-border text-text text-sm rounded-md transition-colors font-medium border border-border"
+        >
+          + Terminal
         </button>
       </div>
     </aside>
