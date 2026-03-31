@@ -90,6 +90,33 @@ fn get_ime_state() -> bool {
         .unwrap_or(false)
 }
 
+/// Save a dropped/uploaded file to a temp directory and return the path
+#[tauri::command]
+fn upload_file(name: String, data: String) -> Result<String, String> {
+    use base64::Engine;
+
+    let upload_dir = std::env::temp_dir().join("ibis-hub-uploads");
+    std::fs::create_dir_all(&upload_dir)
+        .map_err(|e| format!("Failed to create upload dir: {}", e))?;
+
+    // Sanitize filename
+    let safe_name: String = name
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | '\0'))
+        .collect();
+    let file_name = format!("{}_{}", uuid::Uuid::new_v4(), safe_name);
+    let file_path = upload_dir.join(&file_name);
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data)
+        .map_err(|e| format!("Base64 decode failed: {}", e))?;
+
+    std::fs::write(&file_path, bytes)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
 /// WSL-specific file picker using Windows native dialog via PowerShell
 #[tauri::command]
 fn pick_files_wsl() -> Result<Vec<String>, String> {
@@ -158,6 +185,7 @@ pub fn run() {
             close_session,
             rename_session,
             get_platform,
+            upload_file,
             pick_files_wsl,
             toggle_ime,
             get_ime_state,

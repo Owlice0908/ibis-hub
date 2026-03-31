@@ -138,7 +138,11 @@ export function useTauriTransport() {
         }
 
         case "upload_file": {
-          emit({ type: "file_uploaded", path: msg.name, sessionId: msg.sessionId });
+          const path = await invoke<string>("upload_file", {
+            name: msg.name,
+            data: msg.data,
+          });
+          emit({ type: "file_uploaded", path, sessionId: msg.sessionId });
           break;
         }
       }
