@@ -79,7 +79,10 @@ impl PtyManager {
             c.env("COLORTERM", "truecolor");
             c
         } else {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+                if cfg!(target_os = "macos") { "/bin/zsh".to_string() }
+                else { "/bin/bash".to_string() }
+            });
             let mut c = CommandBuilder::new(&shell);
             c.args(["-l"]);
             c.cwd(&cwd);
@@ -276,17 +279,43 @@ impl PtyManager {
 /// On macOS, GUI apps start with a minimal PATH that doesn't include
 /// npm/nvm/homebrew paths, so we need to ask the login shell.
 fn get_user_path() -> String {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    // On macOS, GUI apps may not have SHELL set. Default to zsh (macOS default since Catalina).
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+        if cfg!(target_os = "macos") {
+            "/bin/zsh".to_string()
+        } else {
+            "/bin/bash".to_string()
+        }
+    });
 
-    // Ask the user's login shell for its PATH
+    // Try multiple methods to get the user's PATH
+    // Method 1: Login shell
     if let Ok(output) = std::process::Command::new(&shell)
         .args(["-l", "-c", "echo $PATH"])
         .output()
     {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
+            if !path.is_empty() && path.contains("/") {
                 return path;
+            }
+        }
+    }
+
+    // Method 2: Interactive login shell (some macOS setups need -i)
+    if let Ok(output) = std::process::Command::new(&shell)
+        .args(["-l", "-i", "-c", "echo $PATH"])
+        .env("TERM", "dumb")
+        .output()
+    {
+        if output.status.success() {
+            // Filter out any prompt/escape sequences, take the last line that looks like a PATH
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines().rev() {
+                let trimmed = line.trim();
+                if trimmed.contains("/bin") && trimmed.contains(":") {
+                    return trimmed.to_string();
+                }
             }
         }
     }
@@ -295,8 +324,8 @@ fn get_user_path() -> String {
     let current = std::env::var("PATH").unwrap_or_default();
     let home = std::env::var("HOME").unwrap_or_default();
     format!(
-        "{}:/usr/local/bin:/opt/homebrew/bin:{}/.npm-global/bin",
-        current, home
+        "{}:/usr/local/bin:/opt/homebrew/bin:{}/.npm-global/bin:{}/.nvm/versions/node/default/bin",
+        current, home, home
     )
 }
 

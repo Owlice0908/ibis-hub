@@ -1,8 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import "./App.css";
 import logoUrl from "./assets/logo.png";
-import { check } from "@tauri-apps/plugin-updater";
-import { ask } from "@tauri-apps/plugin-dialog";
 import Sidebar from "./components/Sidebar";
 import TerminalGrid from "./components/TerminalGrid";
 import { useWS } from "./useWebSocket";
@@ -35,11 +33,16 @@ function App() {
   // Keep ref in sync for use in message handler (avoids stale closure)
   focusedSessionIdRef.current = focusedSessionId;
 
-  // Check for updates on startup (Tauri only)
+  // Tauri-only: auto-update check + native drag-and-drop
   useEffect(() => {
     if (!isTauri) return;
+    let dragDropUnlisten: (() => void) | null = null;
+
     (async () => {
+      // Auto-update check
       try {
+        const { check } = await import("@tauri-apps/plugin-updater");
+        const { ask } = await import("@tauri-apps/plugin-dialog");
         const update = await check();
         if (update) {
           const yes = await ask(`新しいバージョン ${update.version} があります。アップデートしますか？`, {
@@ -53,8 +56,30 @@ function App() {
       } catch (e) {
         console.error("Update check failed:", e);
       }
+
+      // Native drag-and-drop: Tauri provides file paths directly
+      try {
+        const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        dragDropUnlisten = await getCurrentWebview().onDragDropEvent((event) => {
+          if (event.payload.type === "drop" && event.payload.paths.length > 0) {
+            const sid = focusedSessionIdRef.current;
+            if (sid) {
+              const data = event.payload.paths
+                .map((p: string) => `"${p.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
+                .join(" ");
+              send({ type: "write", id: sid, data: data + " " });
+            }
+          }
+        });
+      } catch (e) {
+        console.error("Drag-drop setup failed:", e);
+      }
     })();
-  }, []);
+
+    return () => {
+      if (dragDropUnlisten) dragDropUnlisten();
+    };
+  }, [send]);
 
   // Request session list on (re)connect to restore state
   useEffect(() => {
