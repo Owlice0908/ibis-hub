@@ -60,15 +60,19 @@ impl PtyManager {
             std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
         });
 
-        // Build command with environment matching Windows Terminal
+        // On macOS, GUI apps don't inherit the user's shell PATH.
+        // Resolve the full PATH by sourcing the user's login shell profile.
+        let user_path = get_user_path();
+
+        // Build command with proper environment
         let cmd = if session_type == "claude" {
-            let claude_path = which_claude().unwrap_or_else(|| "claude".to_string());
+            let claude_path = which_claude_with_path(&user_path).unwrap_or_else(|| "claude".to_string());
             let mut c = CommandBuilder::new(&claude_path);
             c.cwd(&cwd);
             for (key, value) in std::env::vars() {
                 c.env(key, value);
             }
-            // Ensure terminal environment matches Windows Terminal
+            c.env("PATH", &user_path);
             c.env("TERM", "xterm-256color");
             c.env("LANG", "C.UTF-8");
             c.env("LC_ALL", "C.UTF-8");
@@ -82,6 +86,7 @@ impl PtyManager {
             for (key, value) in std::env::vars() {
                 c.env(key, value);
             }
+            c.env("PATH", &user_path);
             c.env("TERM", "xterm-256color");
             c.env("LANG", "C.UTF-8");
             c.env("LC_ALL", "C.UTF-8");
@@ -267,20 +272,52 @@ impl PtyManager {
     }
 }
 
-/// Find the claude binary by checking PATH and common install locations
-fn which_claude() -> Option<String> {
-    // Try PATH lookup (platform-aware)
-    let which_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
-    if let Ok(output) = std::process::Command::new(which_cmd).arg("claude").output() {
+/// Get the user's full PATH by sourcing their login shell profile.
+/// On macOS, GUI apps start with a minimal PATH that doesn't include
+/// npm/nvm/homebrew paths, so we need to ask the login shell.
+fn get_user_path() -> String {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+
+    // Ask the user's login shell for its PATH
+    if let Ok(output) = std::process::Command::new(&shell)
+        .args(["-l", "-c", "echo $PATH"])
+        .output()
+    {
         if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout)
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return path;
+            }
+        }
+    }
+
+    // Fallback: current PATH + common locations
+    let current = std::env::var("PATH").unwrap_or_default();
+    let home = std::env::var("HOME").unwrap_or_default();
+    format!(
+        "{}:/usr/local/bin:/opt/homebrew/bin:{}/.npm-global/bin",
+        current, home
+    )
+}
+
+/// Find the claude binary using the resolved user PATH
+fn which_claude_with_path(path: &str) -> Option<String> {
+    // Try PATH lookup with the resolved PATH
+    let which_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+    if let Ok(output) = std::process::Command::new(which_cmd)
+        .arg("claude")
+        .env("PATH", path)
+        .output()
+    {
+        if output.status.success() {
+            let found = String::from_utf8_lossy(&output.stdout)
                 .lines()
                 .next()
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            if !path.is_empty() {
-                return Some(path);
+            if !found.is_empty() {
+                return Some(found);
             }
         }
     }
@@ -293,9 +330,9 @@ fn which_claude() -> Option<String> {
     let candidates = [
         format!("{}/.npm-global/bin/claude", home),
         "/usr/local/bin/claude".to_string(),
-        "/opt/homebrew/bin/claude".to_string(),             // Mac Apple Silicon
-        format!("{}/AppData/Roaming/npm/claude.cmd", home), // Windows npm global
-        format!("{}/AppData/Roaming/npm/claude", home),     // Windows npm global (no ext)
+        "/opt/homebrew/bin/claude".to_string(),
+        format!("{}/AppData/Roaming/npm/claude.cmd", home),
+        format!("{}/AppData/Roaming/npm/claude", home),
     ];
 
     for candidate in &candidates {
@@ -304,7 +341,7 @@ fn which_claude() -> Option<String> {
         }
     }
 
-    // Try NVM paths by scanning the directory
+    // Try NVM paths
     let nvm_dir = format!("{}/.nvm/versions/node", home);
     if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
         for entry in entries.flatten() {
