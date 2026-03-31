@@ -9,4 +9,14 @@ export default defineConfig({
     strictPort: true,
     open: true,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          xterm: ["@xterm/xterm", "@xterm/addon-fit", "@xterm/addon-web-links", "@xterm/addon-unicode11"],
+          react: ["react", "react-dom"],
+        },
+      },
+    },
+  },
 });

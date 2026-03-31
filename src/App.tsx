@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import "./App.css";
 import logoUrl from "./assets/logo.png";
+import { check } from "@tauri-apps/plugin-updater";
+import { ask } from "@tauri-apps/plugin-dialog";
 import Sidebar from "./components/Sidebar";
 import TerminalGrid from "./components/TerminalGrid";
 import { useWS } from "./useWebSocket";
@@ -32,6 +34,27 @@ function App() {
 
   // Keep ref in sync for use in message handler (avoids stale closure)
   focusedSessionIdRef.current = focusedSessionId;
+
+  // Check for updates on startup (Tauri only)
+  useEffect(() => {
+    if (!isTauri) return;
+    (async () => {
+      try {
+        const update = await check();
+        if (update) {
+          const yes = await ask(`新しいバージョン ${update.version} があります。アップデートしますか？`, {
+            title: "Ibis Hub アップデート",
+            kind: "info",
+          });
+          if (yes) {
+            await update.downloadAndInstall();
+          }
+        }
+      } catch (e) {
+        console.error("Update check failed:", e);
+      }
+    })();
+  }, []);
 
   // Request session list on (re)connect to restore state
   useEffect(() => {

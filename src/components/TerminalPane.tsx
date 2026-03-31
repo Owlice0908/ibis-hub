@@ -130,7 +130,7 @@ export default function TerminalPane({
       lineHeight: 1.2,
       cursorBlink: false,
       cursorStyle: "bar",
-      scrollback: 2000,
+      scrollback: 1000,
       allowProposedApi: true,
       rightClickSelectsWord: true,
       smoothScrollDuration: 0,

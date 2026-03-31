@@ -1,6 +1,6 @@
 [package]
 name = "ibis-hub"
-version = "0.1.0"
+version = "0.2.0"
 description = "Multi Claude Code session manager"
 authors = ["you"]
 edition = "2021"
@@ -27,4 +27,5 @@ uuid = { version = "1", features = ["v4"] }
 parking_lot = "0.12"
 base64 = "0.22"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
 

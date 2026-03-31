@@ -144,6 +144,7 @@ if($f.ShowDialog() -eq 'OK'){
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let pty_manager = Arc::new(PtyManager::new(app.handle().clone()));
             app.manage(pty_manager);
