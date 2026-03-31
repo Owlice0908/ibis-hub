@@ -7,3 +7,4 @@ export interface Session {
 }
 
 export type LayoutMode = "single" | "focus" | "grid";
+export type ThemeMode = "dark" | "light";

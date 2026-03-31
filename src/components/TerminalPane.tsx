@@ -4,12 +4,60 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
+import type { ThemeMode } from "../types";
+
+const DARK_THEME = {
+  background: "#0f0f0f",
+  foreground: "#e5e5e5",
+  cursor: "#e5e5e5",
+  selectionBackground: "#6366f1aa",
+  black: "#0f0f0f",
+  red: "#ef4444",
+  green: "#22c55e",
+  yellow: "#f59e0b",
+  blue: "#6366f1",
+  magenta: "#a855f7",
+  cyan: "#06b6d4",
+  white: "#e5e5e5",
+  brightBlack: "#555555",
+  brightRed: "#f87171",
+  brightGreen: "#4ade80",
+  brightYellow: "#fbbf24",
+  brightBlue: "#818cf8",
+  brightMagenta: "#c084fc",
+  brightCyan: "#22d3ee",
+  brightWhite: "#ffffff",
+};
+
+const LIGHT_THEME = {
+  background: "#ffffff",
+  foreground: "#1a1a1a",
+  cursor: "#1a1a1a",
+  selectionBackground: "#4f46e5aa",
+  black: "#1a1a1a",
+  red: "#dc2626",
+  green: "#16a34a",
+  yellow: "#d97706",
+  blue: "#4f46e5",
+  magenta: "#9333ea",
+  cyan: "#0891b2",
+  white: "#f5f5f5",
+  brightBlack: "#737373",
+  brightRed: "#ef4444",
+  brightGreen: "#22c55e",
+  brightYellow: "#f59e0b",
+  brightBlue: "#6366f1",
+  brightMagenta: "#a855f7",
+  brightCyan: "#06b6d4",
+  brightWhite: "#ffffff",
+};
 
 interface TerminalPaneProps {
   sessionId: string;
   sessionName: string;
   showControls: boolean;
   isVisible: boolean;
+  theme: ThemeMode;
   wsSend: (msg: any) => void;
   wsOnMessage: (handler: (msg: any) => void) => () => void;
   onDetach: () => void;
@@ -21,6 +69,7 @@ export default function TerminalPane({
   sessionName,
   showControls,
   isVisible,
+  theme,
   wsSend,
   wsOnMessage,
   onDetach,
@@ -99,32 +148,18 @@ export default function TerminalPane({
     }
   }, [isVisible]);
 
+  // Update terminal theme when theme changes
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.options.theme = theme === "dark" ? DARK_THEME : LIGHT_THEME;
+    }
+  }, [theme]);
+
   useEffect(() => {
     if (!termRef.current) return;
 
     const terminal = new Terminal({
-      theme: {
-        background: "#0f0f0f",
-        foreground: "#e5e5e5",
-        cursor: "#e5e5e5",
-        selectionBackground: "#6366f1aa",
-        black: "#0f0f0f",
-        red: "#ef4444",
-        green: "#22c55e",
-        yellow: "#f59e0b",
-        blue: "#6366f1",
-        magenta: "#a855f7",
-        cyan: "#06b6d4",
-        white: "#e5e5e5",
-        brightBlack: "#555555",
-        brightRed: "#f87171",
-        brightGreen: "#4ade80",
-        brightYellow: "#fbbf24",
-        brightBlue: "#818cf8",
-        brightMagenta: "#c084fc",
-        brightCyan: "#22d3ee",
-        brightWhite: "#ffffff",
-      },
+      theme: theme === "dark" ? DARK_THEME : LIGHT_THEME,
       fontFamily: "'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Source Han Mono', 'Noto Sans Mono CJK JP', 'MS Gothic', monospace",
       fontSize: 14,
       lineHeight: 1.2,

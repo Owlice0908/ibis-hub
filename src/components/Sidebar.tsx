@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import type { Session, LayoutMode } from "../types";
+import type { Session, LayoutMode, ThemeMode } from "../types";
 import logoUrl from "../assets/logo.png";
 import NotificationBadge from "./NotificationBadge";
 
@@ -8,8 +8,10 @@ interface SidebarProps {
   activeSessionIds: string[];
   focusedSessionId: string | null;
   layout: LayoutMode;
+  theme: ThemeMode;
   questionSessionIds: string[];
   onLayoutChange: (layout: LayoutMode) => void;
+  onThemeChange: (theme: ThemeMode) => void;
   onCreateSession: (type?: "claude" | "shell") => void;
   onSelectSession: (id: string) => void;
   onCloseSession: (id: string) => void;
@@ -21,8 +23,10 @@ export default function Sidebar({
   activeSessionIds,
   focusedSessionId,
   layout,
+  theme,
   questionSessionIds,
   onLayoutChange,
+  onThemeChange,
   onCreateSession,
   onSelectSession,
   onCloseSession,
@@ -61,12 +65,21 @@ export default function Sidebar({
   return (
     <aside className="w-56 bg-surface border-r border-border flex flex-col h-full shrink-0">
       {/* Header */}
-      <div className="p-4 border-b border-border">
-        <h1 className="text-lg font-bold text-text tracking-tight flex items-center gap-1.5">
-          <img src={logoUrl} alt="" className="w-5 h-5 invert brightness-200" />
-          Ibis Hub
-        </h1>
-        <p className="text-xs text-text-muted mt-0.5">Session Manager</p>
+      <div className="p-4 border-b border-border flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-bold text-text tracking-tight flex items-center gap-1.5">
+            <img src={logoUrl} alt="" className={`w-5 h-5 ${theme === "dark" ? "invert brightness-200" : ""}`} />
+            Ibis Hub
+          </h1>
+          <p className="text-xs text-text-muted mt-0.5">Session Manager</p>
+        </div>
+        <button
+          onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")}
+          className="text-lg px-1.5 py-0.5 rounded hover:bg-surface-hover"
+          title={theme === "dark" ? "Light mode" : "Dark mode"}
+        >
+          {theme === "dark" ? "\u2600" : "\u263E"}
+        </button>
       </div>
 
       {/* Layout toggle */}

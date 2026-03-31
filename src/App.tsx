@@ -5,7 +5,7 @@ import Sidebar from "./components/Sidebar";
 import TerminalGrid from "./components/TerminalGrid";
 import { useWS } from "./useWebSocket";
 import { useTauriTransport } from "./useTauriTransport";
-import type { Session, LayoutMode } from "./types";
+import type { Session, LayoutMode, ThemeMode } from "./types";
 
 // Detect Tauri at module level (constant, safe for hooks)
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -27,11 +27,20 @@ function App() {
   const [focusedSessionId, setFocusedSessionId] = useState<string | null>(null);
   const [layout, setLayout] = useState<LayoutMode>("single");
   const [questionSessions, setQuestionSessions] = useState<Set<string>>(new Set());
+  const [theme, setTheme] = useState<ThemeMode>(() =>
+    (localStorage.getItem("ibis-theme") as ThemeMode) || "dark"
+  );
   const sessionCountRef = useRef(0);
   const focusedSessionIdRef = useRef<string | null>(null);
 
   // Keep ref in sync for use in message handler (avoids stale closure)
   focusedSessionIdRef.current = focusedSessionId;
+
+  // Apply theme to document
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("ibis-theme", theme);
+  }, [theme]);
 
   // Tauri-only: auto-update check + native drag-and-drop
   useEffect(() => {
@@ -217,8 +226,10 @@ function App() {
         activeSessionIds={activeSessionIds}
         focusedSessionId={focusedSessionId}
         layout={layout}
+        theme={theme}
         questionSessionIds={Array.from(questionSessions)}
         onLayoutChange={setLayout}
+        onThemeChange={setTheme}
         onCreateSession={createSession}
         onSelectSession={selectSession}
         onCloseSession={closeSession}
@@ -229,7 +240,7 @@ function App() {
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
               <div className="flex items-center justify-center gap-4 mb-3">
-                <img src={logoUrl} alt="Ibis Hub" className="h-14 w-auto invert brightness-200" />
+                <img src={logoUrl} alt="Ibis Hub" className={`h-14 w-auto ${theme === "dark" ? "invert brightness-200" : ""}`} />
                 <h2 className="text-5xl font-semibold text-text leading-none">
                   Ibis Hub
                 </h2>
@@ -262,6 +273,7 @@ function App() {
             allSessionIds={activeSessionIds}
             visibleSessionIds={visibleSessionIds}
             layout={layout}
+            theme={theme}
             focusedId={focusedId}
             wsSend={send}
             wsOnMessage={onMessage}

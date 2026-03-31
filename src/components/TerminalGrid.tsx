@@ -1,4 +1,4 @@
-import type { LayoutMode, Session } from "../types";
+import type { LayoutMode, Session, ThemeMode } from "../types";
 import TerminalPane from "./TerminalPane";
 
 interface TerminalGridProps {
@@ -6,6 +6,7 @@ interface TerminalGridProps {
   allSessionIds: string[];
   visibleSessionIds: string[];
   layout: LayoutMode;
+  theme: ThemeMode;
   focusedId?: string | null;
   wsSend: (msg: any) => void;
   wsOnMessage: (handler: (msg: any) => void) => () => void;
@@ -18,6 +19,7 @@ export default function TerminalGrid({
   allSessionIds: rawAllSessionIds,
   visibleSessionIds: rawVisibleSessionIds,
   layout,
+  theme,
   focusedId,
   wsSend,
   wsOnMessage,
@@ -44,6 +46,7 @@ export default function TerminalGrid({
             sessionName={mainSession?.name || "Session"}
             showControls={false}
             isVisible={true}
+            theme={theme}
             wsSend={wsSend}
             wsOnMessage={wsOnMessage}
             onDetach={() => onRemoveFromGrid(focusedId)}
@@ -61,6 +64,7 @@ export default function TerminalGrid({
                   sessionName={session?.name || "Session"}
                   showControls={true}
                   isVisible={true}
+                  theme={theme}
                   wsSend={wsSend}
                   wsOnMessage={wsOnMessage}
                   onDetach={() => onRemoveFromGrid(id)}
@@ -80,6 +84,7 @@ export default function TerminalGrid({
                 sessionName={session?.name || "Session"}
                 showControls={false}
                 isVisible={false}
+                theme={theme}
                 wsSend={wsSend}
                 wsOnMessage={wsOnMessage}
                 onDetach={() => onRemoveFromGrid(id)}
@@ -129,6 +134,7 @@ export default function TerminalGrid({
               sessionName={session?.name || "Session"}
               showControls={visibleCount > 1}
               isVisible={isVisible}
+              theme={theme}
               wsSend={wsSend}
               wsOnMessage={wsOnMessage}
               onDetach={() => onRemoveFromGrid(id)}
