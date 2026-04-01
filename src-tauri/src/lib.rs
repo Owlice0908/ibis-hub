@@ -117,6 +117,35 @@ fn upload_file(name: String, data: String) -> Result<String, String> {
     Ok(file_path.to_string_lossy().to_string())
 }
 
+/// macOS file picker using osascript (bypasses WebView completely)
+#[tauri::command]
+fn pick_files_macos() -> Result<Vec<String>, String> {
+    let script = r#"
+set fileList to choose file with multiple selections allowed
+set posixPaths to ""
+repeat with f in fileList
+    set posixPaths to posixPaths & POSIX path of f & linefeed
+end repeat
+return posixPaths
+"#;
+    let output = std::process::Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .map_err(|e| format!("osascript failed: {}", e))?;
+
+    if !output.status.success() {
+        // User cancelled or error
+        return Ok(vec![]);
+    }
+
+    let paths: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    Ok(paths)
+}
+
 /// WSL-specific file picker using Windows native dialog via PowerShell
 #[tauri::command]
 fn pick_files_wsl() -> Result<Vec<String>, String> {
@@ -186,6 +215,7 @@ pub fn run() {
             rename_session,
             get_platform,
             upload_file,
+            pick_files_macos,
             pick_files_wsl,
             toggle_ime,
             get_ime_state,
