@@ -273,7 +273,26 @@ wss.on("connection", (ws) => {
 
         try {
           if (isWsl) {
-            const psScript = `
+            // Ask: Files or Folder?
+            const choiceScript = `
+Add-Type -AssemblyName System.Windows.Forms
+$result = [System.Windows.Forms.MessageBox]::Show("Select files or a folder?\`nFiles = Yes, Folder = No", "Ibis Hub", [System.Windows.Forms.MessageBoxButtons]::YesNoCancel)
+if($result -eq 'Yes') { Write-Output 'files' }
+elseif($result -eq 'No') { Write-Output 'folder' }
+else { Write-Output 'cancel' }`;
+            const choiceResult = spawnSync("powershell.exe", ["-NoProfile", "-Command", choiceScript], { encoding: "utf-8", timeout: 60000 });
+            const choice = (choiceResult.stdout || "").trim();
+
+            if (choice !== "cancel" && choice !== "") {
+              const psScript = choice === "folder"
+                ? `
+Add-Type -AssemblyName System.Windows.Forms
+$f = New-Object System.Windows.Forms.FolderBrowserDialog
+if($f.ShowDialog() -eq 'OK'){
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($f.SelectedPath)
+  [Convert]::ToBase64String($bytes)
+}`
+                : `
 Add-Type -AssemblyName System.Windows.Forms
 $f = New-Object System.Windows.Forms.OpenFileDialog
 $f.Multiselect = $true
@@ -282,17 +301,17 @@ if($f.ShowDialog() -eq 'OK'){
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($joined)
   [Convert]::ToBase64String($bytes)
 }`;
-            const result = spawnSync("powershell.exe", ["-NoProfile", "-Command", psScript], { encoding: "utf-8", timeout: 60000 });
-            const b64 = (result.stdout || "").trim();
-            if (b64) {
-              const decoded = Buffer.from(b64, "base64").toString("utf-8");
-              paths = decoded.split("|").filter(Boolean).map((p) => {
-                const r = spawnSync("wslpath", ["-u", p.trim()], { encoding: "utf-8" });
-                return r.status === 0 ? r.stdout.trim() : p.trim();
-              });
+              const result = spawnSync("powershell.exe", ["-NoProfile", "-Command", psScript], { encoding: "utf-8", timeout: 60000 });
+              const b64 = (result.stdout || "").trim();
+              if (b64) {
+                const decoded = Buffer.from(b64, "base64").toString("utf-8");
+                paths = decoded.split("|").filter(Boolean).map((p) => {
+                  const r = spawnSync("wslpath", ["-u", p.trim()], { encoding: "utf-8" });
+                  return r.status === 0 ? r.stdout.trim() : p.trim();
+                });
+              }
             }
           } else if (plat === "darwin") {
-            // Allow choosing both files and folders via two-button dialog
             const script = `
 set choiceBtn to button returned of (display dialog "Select files or a folder?" buttons {"Files", "Folder", "Cancel"} default button "Files")
 if choiceBtn is "Cancel" then return ""

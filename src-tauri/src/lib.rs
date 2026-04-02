@@ -150,19 +150,27 @@ fn upload_file(name: String, data: String) -> Result<String, String> {
 }
 
 /// macOS file picker using osascript (bypasses WebView completely)
+/// Shows a dialog to choose between files or folder first.
 #[tauri::command]
 fn pick_files_macos() -> Result<Vec<String>, String> {
-    log("pick_files_macos: opening osascript dialog");
+    log("pick_files_macos: opening choice dialog");
     let script = r#"
-set fileList to choose file with multiple selections allowed
-set posixPaths to ""
-repeat with f in fileList
-    set posixPaths to posixPaths & POSIX path of f & linefeed
-end repeat
-return posixPaths
+set choiceBtn to button returned of (display dialog "Select files or a folder?" buttons {"Files", "Folder", "Cancel"} default button "Files")
+if choiceBtn is "Cancel" then return ""
+if choiceBtn is "Folder" then
+    set f to choose folder
+    return POSIX path of f
+else
+    set fileList to choose file with multiple selections allowed
+    set posixPaths to ""
+    repeat with i in fileList
+        set posixPaths to posixPaths & POSIX path of i & linefeed
+    end repeat
+    return posixPaths
+end if
 "#;
     let output = std::process::Command::new("osascript")
-        .args(["-e", script])
+        .args(["-e", &script])
         .output()
         .map_err(|e| format!("osascript failed: {}", e))?;
 
@@ -182,9 +190,38 @@ return posixPaths
 }
 
 /// WSL-specific file picker using Windows native dialog via PowerShell
+/// Shows a choice dialog (Files or Folder) first, then opens the appropriate picker.
 #[tauri::command]
 fn pick_files_wsl() -> Result<Vec<String>, String> {
-    let ps_script = r#"
+    // Ask user: Files or Folder?
+    let choice_script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$result = [System.Windows.Forms.MessageBox]::Show("Select files or a folder?`nFiles = Yes, Folder = No", "Ibis Hub", [System.Windows.Forms.MessageBoxButtons]::YesNoCancel)
+if($result -eq 'Yes') { Write-Output 'files' }
+elseif($result -eq 'No') { Write-Output 'folder' }
+else { Write-Output 'cancel' }
+"#;
+    let choice_output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", choice_script])
+        .output()
+        .map_err(|e| format!("Failed to show choice dialog: {}", e))?;
+    let choice = String::from_utf8_lossy(&choice_output.stdout).trim().to_string();
+
+    if choice == "cancel" || choice.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let ps_script = if choice == "folder" {
+        r#"
+Add-Type -AssemblyName System.Windows.Forms
+$f = New-Object System.Windows.Forms.FolderBrowserDialog
+if($f.ShowDialog() -eq 'OK'){
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($f.SelectedPath)
+    [Convert]::ToBase64String($bytes)
+}
+"#.to_string()
+    } else {
+        r#"
 Add-Type -AssemblyName System.Windows.Forms
 $f = New-Object System.Windows.Forms.OpenFileDialog
 $f.Multiselect = $true
@@ -193,9 +230,10 @@ if($f.ShowDialog() -eq 'OK'){
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($joined)
     [Convert]::ToBase64String($bytes)
 }
-"#;
+"#.to_string()
+    };
     let output = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-Command", ps_script])
+        .args(["-NoProfile", "-Command", &ps_script])
         .output()
         .map_err(|e| format!("Failed to open file dialog: {}", e))?;
 

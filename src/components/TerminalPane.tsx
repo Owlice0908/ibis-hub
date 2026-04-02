@@ -327,7 +327,7 @@ export default function TerminalPane({
           <button
             onClick={() => wsSend({ type: "pick_files" })}
             className="text-base text-accent hover:text-accent-hover px-3 py-1 rounded hover:bg-surface-hover font-medium"
-            title="ファイル選択"
+            title="ファイル・フォルダ選択"
           >
             + File
           </button>
