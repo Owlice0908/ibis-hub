@@ -135,18 +135,26 @@ export default function TerminalPane({
     visibleRef.current = isVisible;
     if (isVisible && terminalRef.current) {
       const terminal = terminalRef.current;
-      if (bufferedDataRef.current) {
-        terminal.write(bufferedDataRef.current);
-        bufferedDataRef.current = "";
-      }
-      requestAnimationFrame(() => {
+      // Delay flush+fit to ensure the container has its final layout dimensions
+      const timer = setTimeout(() => {
+        if (bufferedDataRef.current) {
+          terminal.write(bufferedDataRef.current);
+          bufferedDataRef.current = "";
+        }
         try {
           fitAddonRef.current?.fit();
+          const cols = Math.max(terminal.cols, 20);
+          const rows = Math.max(terminal.rows, 4);
+          if (cols !== terminal.cols || rows !== terminal.rows) {
+            terminal.resize(cols, rows);
+          }
+          wsSend({ type: "resize", id: sessionId, cols, rows });
         } catch {}
         terminal.scrollToBottom();
-      });
+      }, 100);
+      return () => clearTimeout(timer);
     }
-  }, [isVisible]);
+  }, [isVisible, sessionId, wsSend]);
 
   // Update terminal theme when theme changes
   useEffect(() => {
