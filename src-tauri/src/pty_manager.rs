@@ -63,10 +63,12 @@ impl PtyManager {
         // On macOS, GUI apps don't inherit the user's shell PATH.
         // Resolve the full PATH by sourcing the user's login shell profile.
         let user_path = get_user_path();
+        crate::log(&format!("PTY: resolved PATH={}", user_path));
 
         // Build command with proper environment
         let cmd = if session_type == "claude" {
             let claude_path = which_claude_with_path(&user_path).unwrap_or_else(|| "claude".to_string());
+            crate::log(&format!("PTY: claude_path={}", claude_path));
             let mut c = CommandBuilder::new(&claude_path);
             c.cwd(&cwd);
             for (key, value) in std::env::vars() {
@@ -100,7 +102,11 @@ impl PtyManager {
         let child = pair
             .slave
             .spawn_command(cmd)
-            .map_err(|e| format!("Failed to spawn: {}", e))?;
+            .map_err(|e| {
+                crate::log(&format!("PTY: spawn FAILED: {}", e));
+                format!("Failed to spawn: {}", e)
+            })?;
+        crate::log("PTY: spawn OK");
 
         let id = Uuid::new_v4().to_string();
         let info = SessionInfo {

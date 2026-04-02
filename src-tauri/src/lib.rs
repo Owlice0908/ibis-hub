@@ -2,9 +2,35 @@ mod pty_manager;
 
 use pty_manager::{PtyManager, SessionInfo};
 use std::sync::Arc;
+use std::io::Write;
 use tauri::{Manager, State};
 
 type PtyState = Arc<PtyManager>;
+
+/// Write a log message to ~/ibis-hub.log
+fn log(msg: &str) {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/tmp".to_string());
+    let log_path = std::path::PathBuf::from(&home).join("ibis-hub.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(f, "[{}] {}", now, msg);
+    }
+}
+
+/// Get the log file path
+#[tauri::command]
+fn get_log_path() -> String {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/tmp".to_string());
+    std::path::PathBuf::from(&home).join("ibis-hub.log").to_string_lossy().to_string()
+}
 
 #[tauri::command]
 fn create_session(
@@ -14,7 +40,13 @@ fn create_session(
     session_type: Option<String>,
 ) -> Result<SessionInfo, String> {
     let stype = session_type.unwrap_or_else(|| "shell".to_string());
-    state.create_session(name, working_dir, stype)
+    log(&format!("create_session: name={}, type={}, cwd={:?}", name, stype, working_dir));
+    let result = state.create_session(name, working_dir, stype);
+    match &result {
+        Ok(info) => log(&format!("create_session OK: id={}", info.id)),
+        Err(e) => log(&format!("create_session ERROR: {}", e)),
+    }
+    result
 }
 
 #[tauri::command]
@@ -120,6 +152,7 @@ fn upload_file(name: String, data: String) -> Result<String, String> {
 /// macOS file picker using osascript (bypasses WebView completely)
 #[tauri::command]
 fn pick_files_macos() -> Result<Vec<String>, String> {
+    log("pick_files_macos: opening osascript dialog");
     let script = r#"
 set fileList to choose file with multiple selections allowed
 set posixPaths to ""
@@ -134,7 +167,8 @@ return posixPaths
         .map_err(|e| format!("osascript failed: {}", e))?;
 
     if !output.status.success() {
-        // User cancelled or error
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log(&format!("pick_files_macos: cancelled or error: {}", stderr));
         return Ok(vec![]);
     }
 
@@ -143,6 +177,7 @@ return posixPaths
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
+    log(&format!("pick_files_macos: selected {} files: {:?}", paths.len(), paths));
     Ok(paths)
 }
 
@@ -202,6 +237,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            log(&format!("=== Ibis Hub started === platform={}, SHELL={:?}, HOME={:?}",
+                std::env::consts::OS,
+                std::env::var("SHELL").ok(),
+                std::env::var("HOME").ok(),
+            ));
             let pty_manager = Arc::new(PtyManager::new(app.handle().clone()));
             app.manage(pty_manager);
             Ok(())
@@ -214,6 +254,7 @@ pub fn run() {
             close_session,
             rename_session,
             get_platform,
+            get_log_path,
             upload_file,
             pick_files_macos,
             pick_files_wsl,
