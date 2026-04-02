@@ -179,18 +179,24 @@ export default function TerminalPane({
       smoothScrollDuration: 0,
     });
 
-    // Copy/paste shortcuts (Ctrl+Shift+C/V for Linux/Windows, Cmd+C/V for Mac)
+    // Copy/paste: Ctrl+C (copy if selection, else SIGINT passthrough), Ctrl+V (paste)
+    // Mac: Cmd+C/V as before
     const isMac = navigator.platform.toLowerCase().includes("mac");
     terminal.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
-      const copyKey = isMac ? (e.metaKey && e.key === "c") : (e.ctrlKey && e.shiftKey && e.key === "C");
-      const pasteKey = isMac ? (e.metaKey && e.key === "v") : (e.ctrlKey && e.shiftKey && e.key === "V");
-      if (copyKey) {
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      // Ctrl+C / Cmd+C: copy if text selected, otherwise let terminal handle (SIGINT)
+      if (mod && e.key === "c" && !e.shiftKey) {
         const sel = terminal.getSelection();
-        if (sel) navigator.clipboard.writeText(sel);
-        return false;
+        if (sel) {
+          navigator.clipboard.writeText(sel);
+          terminal.clearSelection();
+          return false;
+        }
+        return true; // no selection → pass through as SIGINT
       }
-      if (pasteKey) {
+      // Ctrl+V / Cmd+V: paste from clipboard
+      if (mod && e.key === "v" && !e.shiftKey) {
         navigator.clipboard.readText().then((text) => {
           wsSend({ type: "write", id: sessionId, data: text });
         }).catch(() => {
@@ -370,7 +376,7 @@ export default function TerminalPane({
             className="text-base text-accent hover:text-accent-hover px-3 py-1 rounded hover:bg-surface-hover font-medium"
             title="ファイル・フォルダ選択"
           >
-            + File
+            + Path
           </button>
           {showControls && (
             <>
