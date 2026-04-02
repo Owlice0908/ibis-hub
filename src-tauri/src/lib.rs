@@ -151,12 +151,10 @@ fn upload_file(name: String, data: String) -> Result<String, String> {
 
 /// macOS file picker using NSOpenPanel via JXA.
 /// canChooseFiles + canChooseDirectories = "Open" selects both files and folders.
-/// Uses spawn_blocking to avoid blocking the async runtime.
 #[tauri::command]
-async fn pick_files_macos() -> Result<Vec<String>, String> {
+fn pick_files_macos() -> Result<Vec<String>, String> {
     log("pick_files_macos: opening NSOpenPanel");
-    let output = tauri::async_runtime::spawn_blocking(|| {
-        let script = r#"
+    let script = r#"
 ObjC.import('AppKit');
 var panel = $.NSOpenPanel.openPanel;
 panel.canChooseFiles = true;
@@ -172,13 +170,10 @@ if (result === $.NSModalResponseOK) {
 }
 paths.join('\n');
 "#;
-        std::process::Command::new("osascript")
-            .args(["-l", "JavaScript", "-e", &script])
-            .output()
-    })
-    .await
-    .map_err(|e| format!("Task join failed: {}", e))?
-    .map_err(|e| format!("osascript failed: {}", e))?;
+    let output = std::process::Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", &script])
+        .output()
+        .map_err(|e| format!("osascript failed: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
