@@ -313,20 +313,21 @@ if($f.ShowDialog() -eq 'OK'){
             }
           } else if (plat === "darwin") {
             const script = `
-set choiceBtn to button returned of (display dialog "Select files or a folder?" buttons {"Files", "Folder", "Cancel"} default button "Files")
-if choiceBtn is "Cancel" then return ""
-if choiceBtn is "Folder" then
-  set f to choose folder
-  return POSIX path of f
-else
-  set f to choose file with multiple selections allowed
-  set output to ""
-  repeat with i in f
-    set output to output & POSIX path of i & "|"
-  end repeat
-  return output
-end if`;
-            const result = spawnSync("osascript", ["-e", script], { encoding: "utf-8", timeout: 60000 });
+ObjC.import('AppKit');
+var panel = $.NSOpenPanel.openPanel;
+panel.canChooseFiles = true;
+panel.canChooseDirectories = true;
+panel.allowsMultipleSelection = true;
+var result = panel.runModal;
+var paths = [];
+if (result === $.NSModalResponseOK) {
+    var urls = panel.URLs;
+    for (var i = 0; i < urls.count; i++) {
+        paths.push(urls.objectAtIndex(i).path.js);
+    }
+}
+paths.join('|');`;
+            const result = spawnSync("osascript", ["-l", "JavaScript", "-e", script], { encoding: "utf-8", timeout: 60000 });
             if (result.stdout) paths = result.stdout.trim().split("|").filter(Boolean);
           } else {
             const result = spawnSync("zenity", ["--file-selection", "--multiple", "--separator=|"], { encoding: "utf-8", timeout: 60000 });
