@@ -273,34 +273,16 @@ wss.on("connection", (ws) => {
 
         try {
           if (isWsl) {
-            // OpenFileDialog with dummy filename trick: select files OR folders in one picker
-            // - Select a file → returns file path
-            // - Navigate to folder, click Open without changing filename → returns folder path
             const psScript = `
 Add-Type -AssemblyName System.Windows.Forms
 $f = New-Object System.Windows.Forms.OpenFileDialog
-$f.ValidateNames = $false
-$f.CheckFileExists = $false
-$f.CheckPathExists = $true
 $f.Multiselect = $true
-$f.FileName = [char]0x200B  # zero-width space as dummy
-$f.Title = "Select file or folder"
-$f.Filter = "All files (*.*)|*.*"
-if($f.ShowDialog() -eq 'OK') {
-  $results = @()
-  foreach($fn in $f.FileNames) {
-    if($fn -match ([regex]::Escape([string][char]0x200B) + '$')) {
-      $dir = [System.IO.Path]::GetDirectoryName($fn)
-      if($dir) { $results += $dir }
-    } else {
-      $results += $fn
-    }
-  }
-  $joined = $results -join '|'
+if($f.ShowDialog() -eq 'OK'){
+  $joined = $f.FileNames -join '|'
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($joined)
   [Convert]::ToBase64String($bytes)
 }`;
-            const result = spawnSync("powershell.exe", ["-NoProfile", "-STA", "-Command", psScript], { encoding: "utf-8", timeout: 60000 });
+            const result = spawnSync("powershell.exe", ["-NoProfile", "-Command", psScript], { encoding: "utf-8", timeout: 60000 });
             const b64 = (result.stdout || "").trim();
             if (b64) {
               const decoded = Buffer.from(b64, "base64").toString("utf-8");
@@ -332,7 +314,7 @@ paths.join('|');`;
             if (result.stdout) paths = result.stdout.trim().split("|").filter(Boolean);
           }
         } catch {}
-        ws.send(JSON.stringify({ type: "files_picked", paths, sessionId: msg.sessionId }));
+        ws.send(JSON.stringify({ type: "files_picked", paths }));
         break;
       }
 

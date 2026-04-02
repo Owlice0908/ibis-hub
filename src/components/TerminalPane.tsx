@@ -135,26 +135,18 @@ export default function TerminalPane({
     visibleRef.current = isVisible;
     if (isVisible && terminalRef.current) {
       const terminal = terminalRef.current;
-      // Delay flush+fit to ensure the container has its final layout dimensions
-      const timer = setTimeout(() => {
-        if (bufferedDataRef.current) {
-          terminal.write(bufferedDataRef.current);
-          bufferedDataRef.current = "";
-        }
+      if (bufferedDataRef.current) {
+        terminal.write(bufferedDataRef.current);
+        bufferedDataRef.current = "";
+      }
+      requestAnimationFrame(() => {
         try {
           fitAddonRef.current?.fit();
-          const cols = Math.max(terminal.cols, 20);
-          const rows = Math.max(terminal.rows, 4);
-          if (cols !== terminal.cols || rows !== terminal.rows) {
-            terminal.resize(cols, rows);
-          }
-          wsSend({ type: "resize", id: sessionId, cols, rows });
         } catch {}
         terminal.scrollToBottom();
-      }, 100);
-      return () => clearTimeout(timer);
+      });
     }
-  }, [isVisible, sessionId, wsSend]);
+  }, [isVisible]);
 
   // Update terminal theme when theme changes
   useEffect(() => {
@@ -179,24 +171,18 @@ export default function TerminalPane({
       smoothScrollDuration: 0,
     });
 
-    // Copy/paste: Ctrl+C (copy if selection, else SIGINT passthrough), Ctrl+V (paste)
-    // Mac: Cmd+C/V as before
+    // Copy/paste shortcuts (Ctrl+Shift+C/V for Linux/Windows, Cmd+C/V for Mac)
     const isMac = navigator.platform.toLowerCase().includes("mac");
     terminal.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-      // Ctrl+C / Cmd+C: copy if text selected, otherwise let terminal handle (SIGINT)
-      if (mod && e.key === "c" && !e.shiftKey) {
+      const copyKey = isMac ? (e.metaKey && e.key === "c") : (e.ctrlKey && e.shiftKey && e.key === "C");
+      const pasteKey = isMac ? (e.metaKey && e.key === "v") : (e.ctrlKey && e.shiftKey && e.key === "V");
+      if (copyKey) {
         const sel = terminal.getSelection();
-        if (sel) {
-          navigator.clipboard.writeText(sel);
-          terminal.clearSelection();
-          return false;
-        }
-        return true; // no selection → pass through as SIGINT
+        if (sel) navigator.clipboard.writeText(sel);
+        return false;
       }
-      // Ctrl+V / Cmd+V: paste from clipboard
-      if (mod && e.key === "v" && !e.shiftKey) {
+      if (pasteKey) {
         navigator.clipboard.readText().then((text) => {
           wsSend({ type: "write", id: sessionId, data: text });
         }).catch(() => {
@@ -234,42 +220,19 @@ export default function TerminalPane({
     }
     terminal.open(termRef.current);
 
-    // Delay initial fit to ensure the grid/container layout is fully rendered.
-    // Also send resize to PTY so reconnected sessions output at the correct width.
-    setTimeout(() => {
-      try {
-        fitAddon.fit();
-        const cols = Math.max(terminal.cols, 20);
-        const rows = Math.max(terminal.rows, 4);
-        if (cols !== terminal.cols || rows !== terminal.rows) {
-          terminal.resize(cols, rows);
-        }
-        wsSend({
-          type: "resize",
-          id: sessionId,
-          cols,
-          rows,
-        });
-      } catch {}
-    }, 150);
-
-    // Second fit after layout fully stabilizes (grid reflow can be slow)
-    setTimeout(() => {
-      try {
-        fitAddon.fit();
-        const cols = Math.max(terminal.cols, 20);
-        const rows = Math.max(terminal.rows, 4);
-        if (cols !== terminal.cols || rows !== terminal.rows) {
-          terminal.resize(cols, rows);
-        }
-        wsSend({
-          type: "resize",
-          id: sessionId,
-          cols,
-          rows,
-        });
-      } catch {}
-    }, 500);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try {
+          fitAddon.fit();
+          wsSend({
+            type: "resize",
+            id: sessionId,
+            cols: terminal.cols,
+            rows: terminal.rows,
+          });
+        } catch {}
+      });
+    });
 
     // Guard: when effect re-runs or cleans up, mark this instance as dead
     // so no stale closure can write to a disposed terminal
@@ -376,7 +339,7 @@ export default function TerminalPane({
             className="text-base text-accent hover:text-accent-hover px-3 py-1 rounded hover:bg-surface-hover font-medium"
             title="ファイル・フォルダ選択"
           >
-            + Path
+            + File
           </button>
           {showControls && (
             <>
