@@ -121,12 +121,10 @@ export function useTauriTransport() {
             let paths: string[] = [];
             if (platform === "wsl") {
               paths = await invoke<string[]>("pick_files_wsl");
-            } else if (platform === "macos") {
-              paths = await invoke<string[]>("pick_files_macos");
             } else {
-              // Windows / Linux: use Tauri dialog plugin
+              // macOS / Windows / Linux: use Tauri dialog plugin
               const { open } = await import("@tauri-apps/plugin-dialog");
-              const result = await open({ multiple: true });
+              const result = await open({ multiple: true, directory: false });
               if (result) {
                 paths = Array.isArray(result)
                   ? result.map(f => typeof f === "string" ? f : (f as any).path)
