@@ -58,9 +58,16 @@ html, body, #root {
 }
 
 /* Disable slow transitions for snappy feel */
-* {
+*:not(.splash-screen):not(.splash-screen *) {
   transition-duration: 0s !important;
   animation-duration: 0.15s !important;
+}
+
+/* Splash screen line-draw animation */
+@keyframes drawLine {
+  to {
+    stroke-dashoffset: 0;
+  }
 }
 
 /* xterm overrides */

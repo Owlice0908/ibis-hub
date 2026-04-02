@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import "./App.css";
 import logoUrl from "./assets/logo.png";
 import Sidebar from "./components/Sidebar";
+import SplashScreen from "./components/SplashScreen";
 import TerminalGrid from "./components/TerminalGrid";
 import { useWS } from "./useWebSocket";
 import { useTauriTransport } from "./useTauriTransport";
@@ -30,6 +31,7 @@ function App() {
   const [theme, setTheme] = useState<ThemeMode>(() =>
     (localStorage.getItem("ibis-theme") as ThemeMode) || "dark"
   );
+  const [showSplash, setShowSplash] = useState(true);
   const sessionCountRef = useRef(0);
   const focusedSessionIdRef = useRef<string | null>(null);
 
@@ -223,6 +225,7 @@ function App() {
 
   return (
     <div className="flex h-screen bg-bg">
+      {showSplash && <SplashScreen onDone={() => setShowSplash(false)} />}
       <Sidebar
         sessions={sessions}
         activeSessionIds={activeSessionIds}
