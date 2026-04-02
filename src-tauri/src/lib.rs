@@ -149,45 +149,46 @@ fn upload_file(name: String, data: String) -> Result<String, String> {
     Ok(file_path.to_string_lossy().to_string())
 }
 
-/// macOS file picker using NSOpenPanel via JXA.
+/// macOS file picker using NSOpenPanel directly via objc.
 /// canChooseFiles + canChooseDirectories = "Open" selects both files and folders.
 #[tauri::command]
 fn pick_files_macos() -> Result<Vec<String>, String> {
-    log("pick_files_macos: opening NSOpenPanel");
-    let script = r#"
-ObjC.import('AppKit');
-var panel = $.NSOpenPanel.openPanel;
-panel.canChooseFiles = true;
-panel.canChooseDirectories = true;
-panel.allowsMultipleSelection = true;
-var result = panel.runModal;
-var paths = [];
-if (result === $.NSModalResponseOK) {
-    var urls = panel.URLs;
-    for (var i = 0; i < urls.count; i++) {
-        paths.push(urls.objectAtIndex(i).path.js);
+    log("pick_files_macos: opening NSOpenPanel via objc");
+    #[cfg(target_os = "macos")]
+    {
+        use objc::{msg_send, sel, sel_impl, class};
+        use objc::runtime::Object;
+        unsafe {
+            let panel: *mut Object = msg_send![class!(NSOpenPanel), openPanel];
+            let _: () = msg_send![panel, setCanChooseFiles: true];
+            let _: () = msg_send![panel, setCanChooseDirectories: true];
+            let _: () = msg_send![panel, setAllowsMultipleSelection: true];
+            let result: isize = msg_send![panel, runModal];
+            // NSModalResponseOK = 1
+            if result != 1 {
+                log("pick_files_macos: cancelled");
+                return Ok(vec![]);
+            }
+            let urls: *mut Object = msg_send![panel, URLs];
+            let count: usize = msg_send![urls, count];
+            let mut paths = Vec::with_capacity(count);
+            for i in 0..count {
+                let url: *mut Object = msg_send![urls, objectAtIndex: i];
+                let path: *mut Object = msg_send![url, path];
+                let cstr: *const std::os::raw::c_char = msg_send![path, UTF8String];
+                if !cstr.is_null() {
+                    let s = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
+                    paths.push(s);
+                }
+            }
+            log(&format!("pick_files_macos: selected {} paths: {:?}", paths.len(), paths));
+            Ok(paths)
+        }
     }
-}
-paths.join('\n');
-"#;
-    let output = std::process::Command::new("osascript")
-        .args(["-l", "JavaScript", "-e", &script])
-        .output()
-        .map_err(|e| format!("osascript failed: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log(&format!("pick_files_macos: cancelled or error: {}", stderr));
-        return Ok(vec![]);
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Not macOS".to_string())
     }
-
-    let paths: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    log(&format!("pick_files_macos: selected {} files: {:?}", paths.len(), paths));
-    Ok(paths)
 }
 
 /// WSL-specific file picker using Windows native dialog via PowerShell.
