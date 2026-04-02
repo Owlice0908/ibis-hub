@@ -166,13 +166,15 @@ function App() {
         case "session_error":
           alert(msg.error);
           break;
-        case "files_picked":
-          // Send picked file paths to focused session (use ref to avoid stale closure)
-          if (Array.isArray(msg.paths) && msg.paths.length > 0 && focusedSessionIdRef.current) {
+        case "files_picked": {
+          // Send picked file paths to the session that triggered the pick
+          const targetId = msg.sessionId || focusedSessionIdRef.current;
+          if (Array.isArray(msg.paths) && msg.paths.length > 0 && targetId) {
             const data = msg.paths.map((p: string) => `"${p.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(" ");
-            send({ type: "write", id: focusedSessionIdRef.current, data: data + " " });
+            send({ type: "write", id: targetId, data: data + " " });
           }
           break;
+        }
       }
     });
   }, [onMessage, send]);

@@ -228,19 +228,23 @@ export default function TerminalPane({
     }
     terminal.open(termRef.current);
 
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        try {
-          fitAddon.fit();
-          wsSend({
-            type: "resize",
-            id: sessionId,
-            cols: terminal.cols,
-            rows: terminal.rows,
-          });
-        } catch {}
-      });
-    });
+    // Delay initial fit to ensure the grid/container layout is fully rendered
+    setTimeout(() => {
+      try {
+        fitAddon.fit();
+        const cols = Math.max(terminal.cols, 20);
+        const rows = Math.max(terminal.rows, 4);
+        if (cols !== terminal.cols || rows !== terminal.rows) {
+          terminal.resize(cols, rows);
+        }
+        wsSend({
+          type: "resize",
+          id: sessionId,
+          cols,
+          rows,
+        });
+      } catch {}
+    }, 150);
 
     // Guard: when effect re-runs or cleans up, mark this instance as dead
     // so no stale closure can write to a disposed terminal
@@ -343,7 +347,7 @@ export default function TerminalPane({
         <span className="text-sm text-text-muted font-medium truncate">{sessionName}</span>
         <div className="flex items-center gap-1 shrink-0">
           <button
-            onClick={() => wsSend({ type: "pick_files" })}
+            onClick={() => wsSend({ type: "pick_files", sessionId })}
             className="text-base text-accent hover:text-accent-hover px-3 py-1 rounded hover:bg-surface-hover font-medium"
             title="ファイル・フォルダ選択"
           >

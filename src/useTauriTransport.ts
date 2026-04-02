@@ -133,9 +133,9 @@ export function useTauriTransport() {
                   : [typeof result === "string" ? result : (result as any).path];
               }
             }
-            emit({ type: "files_picked", paths });
+            emit({ type: "files_picked", paths, sessionId: msg.sessionId });
           } catch {
-            emit({ type: "files_picked", paths: [] });
+            emit({ type: "files_picked", paths: [], sessionId: msg.sessionId });
           }
           break;
         }
