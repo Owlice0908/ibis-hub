@@ -228,7 +228,8 @@ export default function TerminalPane({
     }
     terminal.open(termRef.current);
 
-    // Delay initial fit to ensure the grid/container layout is fully rendered
+    // Delay initial fit to ensure the grid/container layout is fully rendered.
+    // Also send resize to PTY so reconnected sessions output at the correct width.
     setTimeout(() => {
       try {
         fitAddon.fit();
@@ -245,6 +246,24 @@ export default function TerminalPane({
         });
       } catch {}
     }, 150);
+
+    // Second fit after layout fully stabilizes (grid reflow can be slow)
+    setTimeout(() => {
+      try {
+        fitAddon.fit();
+        const cols = Math.max(terminal.cols, 20);
+        const rows = Math.max(terminal.rows, 4);
+        if (cols !== terminal.cols || rows !== terminal.rows) {
+          terminal.resize(cols, rows);
+        }
+        wsSend({
+          type: "resize",
+          id: sessionId,
+          cols,
+          rows,
+        });
+      } catch {}
+    }, 500);
 
     // Guard: when effect re-runs or cleans up, mark this instance as dead
     // so no stale closure can write to a disposed terminal

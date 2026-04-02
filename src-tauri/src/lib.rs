@@ -256,6 +256,7 @@ pub fn run() {
             ));
             let pty_manager = Arc::new(PtyManager::new(app.handle().clone()));
             app.manage(pty_manager);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -262,13 +262,24 @@ impl PtyManager {
     }
 
     pub fn close_session(&self, id: &str) -> Result<(), String> {
-        let session = self.sessions
+        let mut session = self.sessions
             .lock()
             .remove(id)
             .ok_or_else(|| "Session not found".to_string())?;
         // Signal the reader thread to stop
         session.stop_flag.store(true, Ordering::Relaxed);
+        // Kill the child process
+        let _ = session._child.kill();
         Ok(())
+    }
+
+    /// Close all sessions (called on app exit)
+    pub fn close_all(&self) {
+        let mut sessions = self.sessions.lock();
+        for (_, mut session) in sessions.drain() {
+            session.stop_flag.store(true, Ordering::Relaxed);
+            let _ = session._child.kill();
+        }
     }
 
     pub fn rename_session(&self, id: &str, name: &str) -> Result<(), String> {
