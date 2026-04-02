@@ -151,10 +151,13 @@ fn upload_file(name: String, data: String) -> Result<String, String> {
 
 /// macOS file picker using NSOpenPanel via JXA.
 /// canChooseFiles + canChooseDirectories = "Open" selects both files and folders.
+/// Spawns a thread to avoid blocking the main/IPC thread.
 #[tauri::command]
-fn pick_files_macos() -> Result<Vec<String>, String> {
+async fn pick_files_macos() -> Result<Vec<String>, String> {
     log("pick_files_macos: opening NSOpenPanel");
-    let script = r#"
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let script = r#"
 ObjC.import('AppKit');
 var panel = $.NSOpenPanel.openPanel;
 panel.canChooseFiles = true;
@@ -170,9 +173,14 @@ if (result === $.NSModalResponseOK) {
 }
 paths.join('\n');
 "#;
-    let output = std::process::Command::new("osascript")
-        .args(["-l", "JavaScript", "-e", &script])
-        .output()
+        let output = std::process::Command::new("osascript")
+            .args(["-l", "JavaScript", "-e", &script])
+            .output();
+        let _ = tx.send(output);
+    });
+
+    let output = rx.recv()
+        .map_err(|e| format!("Thread communication failed: {}", e))?
         .map_err(|e| format!("osascript failed: {}", e))?;
 
     if !output.status.success() {
