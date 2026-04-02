@@ -190,6 +190,16 @@ export default function TerminalPane({
         });
         return false;
       }
+      // Select + Backspace/Delete: delete selected text by sending backspaces
+      if (e.key === "Backspace" || e.key === "Delete") {
+        const sel = terminal.getSelection();
+        if (sel && sel.length > 0) {
+          terminal.clearSelection();
+          const backspaces = "\x7f".repeat(sel.length);
+          wsSend({ type: "write", id: sessionId, data: backspaces });
+          return false;
+        }
+      }
       return true;
     });
 
