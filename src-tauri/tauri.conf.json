@@ -28,7 +28,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "RWQIj+Z6136KTQJfi1xii44fI6NW9dR6gt2APPkGhRzs3jMTyR0/lpTT",
+      "pubkey": "RWTWYxBWraTK/Upg2DAK4m6e0Awvyv/vGNbXtyoZMxfouJ1qiC09117u",
       "endpoints": [
         "https://github.com/Owlice0908/ibis-hub/releases/latest/download/latest.json"
       ]
