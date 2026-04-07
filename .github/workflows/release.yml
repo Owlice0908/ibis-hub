@@ -246,3 +246,42 @@ jobs:
 
           gh release upload "$TAG" /tmp/latest.json --repo "$REPO" --clobber
           echo "✓ latest.json uploaded with $PLATFORM_COUNT platform(s)"
+
+  # End-to-end verification: download latest.json from the freshly published
+  # release and cryptographically verify the signatures match the bundles.
+  # This is the same chain that the in-app Tauri updater performs, run from
+  # CI so we get a guarantee that auto-update will work — without needing
+  # any Mac user to test it.
+  verify-updater-chain:
+    needs: assemble-latest-json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build verify-updater binary
+        working-directory: src-tauri
+        run: cargo build --bin verify-updater --release
+
+      - name: Wait for release CDN to propagate
+        run: sleep 30
+
+      - name: Verify darwin-aarch64
+        working-directory: src-tauri
+        env:
+          VERIFY_UPDATER_PLATFORM: darwin-aarch64
+        run: ./target/release/verify-updater
+
+      - name: Verify darwin-x86_64
+        working-directory: src-tauri
+        env:
+          VERIFY_UPDATER_PLATFORM: darwin-x86_64
+        run: ./target/release/verify-updater
+
+      - name: Verify linux-x86_64
+        working-directory: src-tauri
+        env:
+          VERIFY_UPDATER_PLATFORM: linux-x86_64
+        run: ./target/release/verify-updater
