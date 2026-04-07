@@ -282,6 +282,70 @@ export default function TerminalPane({
     terminal.loadAddon(unicode11Addon);
     terminal.unicode.activeVersion = "11";
 
+    // Register CJK-aware unicode provider that treats East Asian Ambiguous
+    // characters (①②③, ★, ◯, box drawing, etc.) as wide (2 columns).
+    // Without this, those characters overlap visually because xterm thinks
+    // they're 1 column wide but the font renders them as 2 columns.
+    try {
+      const baseProvider: any = (terminal as any)._core?._inputHandler?._parser?._unicodeService?._activeProvider
+        ?? (terminal as any)._core?._unicodeService?._activeProvider;
+      const fallbackWcwidth = (cp: number): 0 | 1 | 2 => {
+        if (baseProvider && typeof baseProvider.wcwidth === "function") {
+          return baseProvider.wcwidth(cp);
+        }
+        // Minimal fallback: ASCII = 1, control = 0
+        if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) return 0;
+        return 1;
+      };
+      const isAmbiguousWide = (cp: number): boolean => {
+        // Common East Asian Ambiguous ranges that CJK fonts render as wide
+        return (
+          (cp >= 0x2460 && cp <= 0x24ff) || // Enclosed Alphanumerics: ①②③ ⓿ Ⓐ
+          (cp >= 0x2500 && cp <= 0x257f) || // Box Drawing
+          (cp >= 0x2580 && cp <= 0x259f) || // Block Elements
+          (cp >= 0x25a0 && cp <= 0x25ff) || // Geometric Shapes: ◯ ■ ▲
+          (cp >= 0x2600 && cp <= 0x26ff) || // Misc Symbols: ★ ☆ ☀
+          (cp >= 0x2700 && cp <= 0x27bf) || // Dingbats: ✓ ✗ ✚
+          (cp >= 0x2070 && cp <= 0x209f) || // Super/Subscripts
+          (cp >= 0x2150 && cp <= 0x218f) || // Number Forms: ⅓ ⅔
+          (cp >= 0x2190 && cp <= 0x21ff) || // Arrows: ← → ↑ ↓
+          (cp >= 0x2200 && cp <= 0x22ff) || // Math operators: ∀ ∃ ∈
+          (cp >= 0x2300 && cp <= 0x23ff) || // Misc technical
+          (cp >= 0x2e80 && cp <= 0x2eff) || // CJK Radicals Supplement
+          (cp >= 0x3000 && cp <= 0x303f) || // CJK Symbols and Punctuation:
+          (cp === 0x00a7) || (cp === 0x00a8) || // § ¨
+          (cp === 0x00b0) || (cp === 0x00b1) || // ° ±
+          (cp === 0x00b4) || (cp === 0x00b6) || // ´ ¶
+          (cp === 0x00d7) || (cp === 0x00f7)    // × ÷
+        );
+      };
+      const cjkProvider = {
+        version: "cjk",
+        wcwidth: (cp: number): 0 | 1 | 2 => {
+          if (isAmbiguousWide(cp)) return 2;
+          return fallbackWcwidth(cp);
+        },
+        charProperties: (codepoint: number, preceding: number): number => {
+          // Delegate to base provider if it implements charProperties (newer xterm)
+          if (baseProvider && typeof baseProvider.charProperties === "function") {
+            const props = baseProvider.charProperties(codepoint, preceding);
+            if (isAmbiguousWide(codepoint)) {
+              // Override width bits (bits 0-1) to be 2
+              return (props & ~0b11) | 2;
+            }
+            return props;
+          }
+          // Minimal fallback
+          const w = isAmbiguousWide(codepoint) ? 2 : fallbackWcwidth(codepoint);
+          return w;
+        },
+      };
+      terminal.unicode.register(cjkProvider as any);
+      terminal.unicode.activeVersion = "cjk";
+    } catch (e) {
+      console.warn("CJK unicode provider registration failed:", e);
+    }
+
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 

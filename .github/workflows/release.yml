@@ -55,12 +55,26 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Sync version in tauri.conf.json from the git tag (strip leading 'v')
+      - name: Sync version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Setting version to $VERSION"
+          node -e "const f='src-tauri/tauri.conf.json';const j=JSON.parse(require('fs').readFileSync(f,'utf-8'));j.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(j,null,2)+'\n');"
+          node -e "const f='package.json';const j=JSON.parse(require('fs').readFileSync(f,'utf-8'));j.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(j,null,2)+'\n');"
+          # Cargo.toml: simple sed replacement of the first version line
+          node -e "const fs=require('fs');const f='src-tauri/Cargo.toml';let c=fs.readFileSync(f,'utf-8');c=c.replace(/^version = \"[^\"]*\"/m,'version = \"$VERSION\"');fs.writeFileSync(f,c);"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Intentionally NOT setting TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
+          # If the key was generated without a password, omitting this var
+          # is the correct way to indicate "no password". Setting it to an
+          # empty string causes signing to fail silently on some Tauri versions.
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Ibis Hub ${{ github.ref_name }}'
