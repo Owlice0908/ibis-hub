@@ -5,6 +5,14 @@ description = "Multi Claude Code session manager"
 authors = ["you"]
 edition = "2021"
 license = "MIT"
+# We have two binaries: the main Tauri app (src/main.rs → "ibis-hub") and
+# the CI-only verify-updater. tauri-action runs `tauri build` which calls
+# `cargo build` without --bin, so we need an explicit default.
+default-run = "ibis-hub"
+
+[[bin]]
+name = "ibis-hub"
+path = "src/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
