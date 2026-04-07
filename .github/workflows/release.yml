@@ -96,8 +96,18 @@ jobs:
         run: |
           set -e
           VERSION="${GITHUB_REF_NAME#v}"
+          echo "=== Diagnostic ==="
+          echo "PWD: $(pwd)"
+          echo "WORKSPACE: $GITHUB_WORKSPACE"
+          echo "Listing target/ existence:"
+          ls -la src-tauri/target 2>&1 || echo "(no src-tauri/target relative)"
+          ls -la "$GITHUB_WORKSPACE/src-tauri/target" 2>&1 || echo "(no workspace target)"
+          echo "Searching from /Users/runner/work entire tree for .sig:"
+          find "$GITHUB_WORKSPACE" -type f -name "*.sig" 2>&1 || true
+          find / -type f -name "Ibis*sig" 2>/dev/null || true
+          echo "=== End diagnostic ==="
+
           FOUND=0
-          # Use process substitution + while read for bash 3.2 compat (macOS)
           while IFS= read -r sig; do
             [ -z "$sig" ] && continue
             FOUND=1
@@ -114,9 +124,9 @@ jobs:
             cp "$sig" "/tmp/$renamed"
             echo "Uploading $renamed to release ${GITHUB_REF_NAME}"
             gh release upload "$GITHUB_REF_NAME" "/tmp/$renamed" --repo "$GITHUB_REPOSITORY" --clobber
-          done < <(find src-tauri/target -type f -name "*.sig" 2>/dev/null || true)
+          done < <(find "$GITHUB_WORKSPACE" -type f -name "*.sig" 2>/dev/null || true)
           if [ "$FOUND" -eq 0 ]; then
-            echo "No .sig files found — signing may have failed"
+            echo "No .sig files found — see diagnostic above"
           fi
 
       - name: Upload updater signature files (Windows)
