@@ -77,36 +77,37 @@ describe("Right-click smart copy/paste handler", () => {
     );
   });
 
-  it("registers a contextmenu listener on the terminal container", () => {
+  it("imports decideRightClick from terminalUtils", () => {
+    // Critical: the unit-tested pure function must actually be imported.
+    // Without this import the unit tests of decideRightClick would be lying.
+    expect(source).toMatch(/import\s*\{[^}]*decideRightClick[^}]*\}\s*from\s*["']\.\.\/lib\/terminalUtils["']/);
+  });
+
+  it("calls decideRightClick(terminal.hasSelection()) inside handleContextMenu", () => {
+    expect(source).toMatch(/decideRightClick\(\s*terminal\.hasSelection\(\)\s*\)/);
+  });
+
+  it("registers a contextmenu listener with capture phase", () => {
+    // Capture phase ensures we win over any addon that might attach to a child.
     expect(source).toMatch(
-      /addEventListener\("contextmenu",\s*handleContextMenu\)/,
+      /addEventListener\(\s*"contextmenu",\s*handleContextMenu,\s*true\s*\)/,
+    );
+  });
+
+  it("removes the contextmenu listener on unmount with matching capture flag", () => {
+    expect(source).toMatch(
+      /removeEventListener\(\s*"contextmenu",\s*handleContextMenu,\s*true\s*\)/,
     );
   });
 
   it("contextmenu handler calls preventDefault and stopPropagation", () => {
     const match = source.match(
-      /const handleContextMenu = \(e: MouseEvent\) => \{[\s\S]*?\};/,
+      /const handleContextMenu = \(e: MouseEvent\) => \{[\s\S]*?\n    \};/,
     );
     expect(match, "handler must exist").not.toBeNull();
     const handler = match![0];
     expect(handler).toContain("e.preventDefault()");
     expect(handler).toContain("e.stopPropagation()");
-  });
-
-  it("contextmenu handler copies on selection, pastes on no selection", () => {
-    const match = source.match(
-      /const handleContextMenu = \(e: MouseEvent\) => \{[\s\S]*?\};/,
-    );
-    const handler = match![0];
-    expect(handler).toContain("terminal.hasSelection()");
-    expect(handler).toContain("clipboard.writeText");
-    expect(handler).toContain("clipboard.readText");
-  });
-
-  it("removes the contextmenu listener on unmount (cleanup)", () => {
-    expect(source).toMatch(
-      /removeEventListener\("contextmenu",\s*handleContextMenu\)/,
-    );
   });
 
   it("disables xterm built-in rightClickSelectsWord (so our handler wins)", () => {
@@ -135,6 +136,23 @@ describe("Drag & drop bridging", () => {
     expect(source).toMatch(/CustomEvent\("ibis-native-dragover"/);
     expect(source).toMatch(/CustomEvent\("ibis-native-dragleave"/);
     expect(source).toMatch(/CustomEvent\("ibis-native-drop"/);
+  });
+
+  it("App.tsx passes IS_MAC flag to findDropTargetSession (wry coordinate fix)", () => {
+    const source = readFileSync(resolve(__dirname, "../../src/App.tsx"), "utf-8");
+    // The IS_MAC constant must exist
+    expect(source).toMatch(/const IS_MAC\s*=/);
+    // findDropTargetSession must be called with IS_MAC as the 5th arg
+    expect(source).toMatch(/findDropTargetSession\([\s\S]*?IS_MAC[\s\S]*?\)/);
+  });
+
+  it("TerminalPane handleDragOver uses dndPositionToLogical with IS_MAC", () => {
+    const source = readFileSync(
+      resolve(__dirname, "../../src/components/TerminalPane.tsx"),
+      "utf-8",
+    );
+    expect(source).toMatch(/import\s*\{[^}]*dndPositionToLogical[^}]*\}/);
+    expect(source).toMatch(/dndPositionToLogical\([^)]*IS_MAC[^)]*\)/);
   });
 
   it("TerminalPane has data-session-id attribute on root", () => {

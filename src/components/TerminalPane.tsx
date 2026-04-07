@@ -5,9 +5,15 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import type { ThemeMode } from "../types";
-import { decideKeyAction, isAmbiguousWide } from "../lib/terminalUtils";
+import {
+  decideKeyAction,
+  decideRightClick,
+  isAmbiguousWide,
+  dndPositionToLogical,
+} from "../lib/terminalUtils";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const IS_MAC = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
 
 const DARK_THEME = {
   background: "#0f0f0f",
@@ -144,8 +150,8 @@ export default function TerminalPane({
       const { x, y } = (e as CustomEvent).detail;
       const scale = window.devicePixelRatio || 1;
       const rect = root.getBoundingClientRect();
-      const cx = x / scale;
-      const cy = y / scale;
+      // Use the same Mac/non-Mac logic as App.tsx via the shared helper.
+      const { x: cx, y: cy } = dndPositionToLogical({ x, y }, scale, IS_MAC);
       const isOver = cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom;
       setDragOver(isOver);
     };
@@ -290,18 +296,24 @@ export default function TerminalPane({
           return fallbackWcwidth(cp);
         },
         charProperties: (codepoint: number, preceding: number): number => {
-          // Delegate to base provider if it implements charProperties (newer xterm)
+          // xterm.js v6 charProperties bit layout (verified in xterm.mjs):
+          //   bit 0    : shouldJoin (ZWJ continuation)
+          //   bits 1-2 : width (0-3)
+          //   bits 3+  : char kind / state
+          // To set width=2 we need bits 1-2 = 0b10, i.e. value 0b100 = 4 = (2 << 1).
+          // Mask 0b110 clears the width bits while preserving shouldJoin (bit 0)
+          // and the higher state bits.
           if (baseProvider && typeof baseProvider.charProperties === "function") {
             const props = baseProvider.charProperties(codepoint, preceding);
             if (isAmbiguousWide(codepoint)) {
-              // Override width bits (bits 0-1) to be 2
-              return (props & ~0b11) | 2;
+              return (props & ~0b110) | (2 << 1);
             }
             return props;
           }
-          // Minimal fallback
-          const w = isAmbiguousWide(codepoint) ? 2 : fallbackWcwidth(codepoint);
-          return w;
+          // Fallback when base provider has no charProperties: encode width
+          // in the same bit positions xterm expects.
+          const width = isAmbiguousWide(codepoint) ? 2 : fallbackWcwidth(codepoint);
+          return (width << 1);
         },
       };
       terminal.unicode.register(cjkProvider as any);
@@ -384,27 +396,32 @@ export default function TerminalPane({
     });
 
     // Right-click: Windows Terminal style smart copy/paste.
-    // If text is selected → copy + clear selection.
-    // Otherwise → paste from clipboard.
-    // Always prevents default (no link open, no context menu).
+    // The copy-vs-paste decision is delegated to the unit-tested
+    // `decideRightClick` pure function so test and production stay in sync.
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
       if (!alive) return;
-      if (terminal.hasSelection()) {
+      const action = decideRightClick(terminal.hasSelection());
+      if (action === "copy") {
         const sel = terminal.getSelection();
         if (sel) {
           navigator.clipboard.writeText(sel).catch(() => {});
           terminal.clearSelection();
         }
       } else {
-        navigator.clipboard.readText().then((text) => {
-          if (alive) wsSend({ type: "write", id: sessionId, data: text });
-        }).catch(() => {});
+        navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (alive) wsSend({ type: "write", id: sessionId, data: text });
+          })
+          .catch(() => {});
       }
     };
     const containerEl = termRef.current;
-    containerEl?.addEventListener("contextmenu", handleContextMenu);
+    // Use capture phase so we win over any addon (e.g. WebLinksAddon) that
+    // might attach a contextmenu listener on a child element.
+    containerEl?.addEventListener("contextmenu", handleContextMenu, true);
 
     const observer = new ResizeObserver(() => handleResize());
     observer.observe(termRef.current);
@@ -413,7 +430,7 @@ export default function TerminalPane({
       alive = false;
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       observer.disconnect();
-      containerEl?.removeEventListener("contextmenu", handleContextMenu);
+      containerEl?.removeEventListener("contextmenu", handleContextMenu, true);
       onData.dispose();
       unsubscribe();
       terminal.dispose();

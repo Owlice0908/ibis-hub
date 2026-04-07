@@ -11,6 +11,9 @@ import type { Session, LayoutMode, ThemeMode } from "./types";
 
 // Detect Tauri at module level (constant, safe for hooks)
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+// Detect Mac for D&D coordinate handling (wry returns logical points on macOS,
+// physical pixels on Win/Linux — see findDropTargetSession docs).
+const IS_MAC = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
 
 // In dev mode (Vite), connect to the server port. In production, use same host.
 const WS_URL = window.location.port === "1420"
@@ -95,8 +98,9 @@ function App() {
                 scale,
                 document,
                 focusedSessionIdRef.current,
+                IS_MAC,
               );
-              dlog(`drop target: sid=${sid}`);
+              dlog(`drop target: sid=${sid}, isMac=${IS_MAC}`);
 
               if (sid) {
                 send({ type: "write", id: sid, data: pathsToShellArgs(paths) });

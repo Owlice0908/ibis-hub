@@ -78,14 +78,36 @@ describe("decideKeyAction — Mac Shift+letter early send", () => {
     isComposing: false,
   };
 
-  it("returns 'shift-direct' for Mac Shift+A (uppercase letter)", () => {
-    const e = { ...baseEvent, key: "A", shiftKey: true };
-    expect(decideKeyAction(e, true, false)).toBe("shift-direct");
+  it("returns 'shift-direct' for Mac Shift+A through Shift+Z (all uppercase letters)", () => {
+    for (let c = 0x41; c <= 0x5a; c++) {
+      const e = { ...baseEvent, key: String.fromCharCode(c), shiftKey: true };
+      expect(decideKeyAction(e, true, false)).toBe("shift-direct");
+    }
   });
 
-  it("returns 'shift-direct' for Mac Shift+! (shift+symbol)", () => {
+  it("returns 'shift-direct' for Mac Shift + lowercase a-z (caps lock case)", () => {
+    // shift+lowercase happens when caps lock affects key property differently
+    for (let c = 0x61; c <= 0x7a; c++) {
+      const e = { ...baseEvent, key: String.fromCharCode(c), shiftKey: true };
+      expect(decideKeyAction(e, true, false)).toBe("shift-direct");
+    }
+  });
+
+  it("does NOT return 'shift-direct' for Mac Shift+! (was a bug — symbols must pass through)", () => {
     const e = { ...baseEvent, key: "!", shiftKey: true };
-    expect(decideKeyAction(e, true, false)).toBe("shift-direct");
+    expect(decideKeyAction(e, true, false)).toBe("pass");
+  });
+
+  it("does NOT return 'shift-direct' for Mac Shift+digit symbols (@#$%^&*)", () => {
+    for (const k of ["@", "#", "$", "%", "^", "&", "*", "(", ")"]) {
+      const e = { ...baseEvent, key: k, shiftKey: true };
+      expect(decideKeyAction(e, true, false)).toBe("pass");
+    }
+  });
+
+  it("does NOT return 'shift-direct' for Mac Shift+Space (preserves xterm escape)", () => {
+    const e = { ...baseEvent, key: " ", shiftKey: true };
+    expect(decideKeyAction(e, true, false)).toBe("pass");
   });
 
   it("does NOT return 'shift-direct' on Win/Linux (only Mac has the bug)", () => {
@@ -103,16 +125,44 @@ describe("decideKeyAction — Mac Shift+letter early send", () => {
     expect(decideKeyAction(e, true, false)).toBe("pass");
   });
 
-  it("does NOT return 'shift-direct' for shift + Tab", () => {
-    const e = { ...baseEvent, key: "Tab", shiftKey: true };
+  it("does NOT return 'shift-direct' for shift + Tab/Enter/Backspace", () => {
+    for (const k of ["Tab", "Enter", "Backspace", "Delete", "Escape"]) {
+      const e = { ...baseEvent, key: k, shiftKey: true };
+      expect(decideKeyAction(e, true, false)).toBe("pass");
+    }
+  });
+
+  it("does NOT return 'shift-direct' for Function keys", () => {
+    for (let i = 1; i <= 12; i++) {
+      const e = { ...baseEvent, key: `F${i}`, shiftKey: true };
+      expect(decideKeyAction(e, true, false)).toBe("pass");
+    }
+  });
+
+  it("does NOT return 'shift-direct' for Page Up/Down/Home/End/Insert", () => {
+    for (const k of ["PageUp", "PageDown", "Home", "End", "Insert"]) {
+      const e = { ...baseEvent, key: k, shiftKey: true };
+      expect(decideKeyAction(e, true, false)).toBe("pass");
+    }
+  });
+
+  it("does NOT return 'shift-direct' for dead keys", () => {
+    const e = { ...baseEvent, key: "Dead", shiftKey: true };
     expect(decideKeyAction(e, true, false)).toBe("pass");
   });
 
   it("does NOT intercept Cmd+Shift+letter (Mac modifier combo)", () => {
     const e = { ...baseEvent, key: "C", shiftKey: true, metaKey: true };
-    // Cmd+Shift+C is not the standard copy on Mac (that's Cmd+C),
-    // but importantly we should NOT shift-direct it.
     expect(decideKeyAction(e, true, false)).not.toBe("shift-direct");
+  });
+
+  it("does NOT intercept Ctrl+Shift+letter or Alt+Shift+letter", () => {
+    expect(
+      decideKeyAction({ ...baseEvent, key: "A", shiftKey: true, ctrlKey: true }, true, false),
+    ).not.toBe("shift-direct");
+    expect(
+      decideKeyAction({ ...baseEvent, key: "A", shiftKey: true, altKey: true }, true, false),
+    ).not.toBe("shift-direct");
   });
 });
 
@@ -224,27 +274,42 @@ describe("findDropTargetSession", () => {
     };
   });
 
-  it("returns the session id of the pane at the drop position", () => {
-    expect(findDropTargetSession({ x: 100, y: 100 }, 1, doc, null)).toBe("session-A");
-    expect(findDropTargetSession({ x: 300, y: 100 }, 1, doc, null)).toBe("session-B");
+  it("Win/Linux: returns the session id of the pane at the drop position (scale=1)", () => {
+    expect(findDropTargetSession({ x: 100, y: 100 }, 1, doc, null, false)).toBe("session-A");
+    expect(findDropTargetSession({ x: 300, y: 100 }, 1, doc, null, false)).toBe("session-B");
   });
 
-  it("divides by devicePixelRatio for retina displays", () => {
-    // On Mac retina (scale=2), Tauri reports physical pixels.
-    // Position (200, 200) physical = (100, 100) logical = session-A
-    expect(findDropTargetSession({ x: 200, y: 200 }, 2, doc, null)).toBe("session-A");
+  it("Win/Linux: divides by devicePixelRatio for high-DPI displays (Tauri reports physical px)", () => {
+    // Position (200, 200) physical at scale=2 = (100, 100) logical = session-A
+    expect(findDropTargetSession({ x: 200, y: 200 }, 2, doc, null, false)).toBe("session-A");
     // Position (600, 200) physical = (300, 100) logical = session-B
-    expect(findDropTargetSession({ x: 600, y: 200 }, 2, doc, null)).toBe("session-B");
+    expect(findDropTargetSession({ x: 600, y: 200 }, 2, doc, null, false)).toBe("session-B");
+    // Non-integer DPI (Windows 125%, 150%)
+    expect(findDropTargetSession({ x: 125, y: 125 }, 1.25, doc, null, false)).toBe("session-A");
+    expect(findDropTargetSession({ x: 450, y: 150 }, 1.5, doc, null, false)).toBe("session-B");
+  });
+
+  it("Mac: does NOT divide by devicePixelRatio (wry already returns logical points)", () => {
+    // The bug was: on Mac Retina (scale=2), dividing collapsed coords to top-left 1/4.
+    // Now Mac uses raw coordinates. Position (300, 100) logical = session-B regardless of scale.
+    expect(findDropTargetSession({ x: 300, y: 100 }, 2, doc, null, true)).toBe("session-B");
+    expect(findDropTargetSession({ x: 300, y: 100 }, 1, doc, null, true)).toBe("session-B");
+    // The buggy behavior would have returned session-A (300/2 = 150 < 200).
+  });
+
+  it("Mac: a drop on the right pane at logical position 300 stays on the right pane", () => {
+    // Regression test for the wry / Tauri Issue #10744 fix
+    expect(findDropTargetSession({ x: 350, y: 50 }, 2, doc, "fallback", true)).toBe("session-B");
   });
 
   it("returns fallback when position resolves to no pane (e.g. sidebar)", () => {
-    expect(findDropTargetSession({ x: 9999, y: 9999 }, 1, doc, "fallback-session")).toBe(
+    expect(findDropTargetSession({ x: 9999, y: 9999 }, 1, doc, "fallback-session", false)).toBe(
       "fallback-session",
     );
   });
 
   it("returns fallback when position is undefined", () => {
-    expect(findDropTargetSession(undefined, 1, doc, "fb")).toBe("fb");
+    expect(findDropTargetSession(undefined, 1, doc, "fb", false)).toBe("fb");
   });
 
   it("handles nested children inside a pane (closest()), not just direct elements", () => {
@@ -253,14 +318,14 @@ describe("findDropTargetSession", () => {
     child.textContent = "inner";
     pane.appendChild(child);
     (doc as any).elementFromPoint = () => child;
-    expect(findDropTargetSession({ x: 50, y: 50 }, 1, doc, null)).toBe("session-A");
+    expect(findDropTargetSession({ x: 50, y: 50 }, 1, doc, null, false)).toBe("session-A");
   });
 });
 
 // ============================================================================
 // Path → shell args formatting (used in +File and D&D)
 // ============================================================================
-describe("pathsToShellArgs", () => {
+describe("pathsToShellArgs — basic formatting", () => {
   it("wraps each path in double quotes with trailing space", () => {
     expect(pathsToShellArgs(["/Users/me/foo.txt"])).toBe('"/Users/me/foo.txt" ');
   });
@@ -277,7 +342,65 @@ describe("pathsToShellArgs", () => {
     expect(pathsToShellArgs(["C:\\Users\\me"])).toBe('"C:\\\\Users\\\\me" ');
   });
 
-  it("returns just trailing space for empty array", () => {
-    expect(pathsToShellArgs([])).toBe(" ");
+  it("returns empty string for empty array (no trailing space)", () => {
+    expect(pathsToShellArgs([])).toBe("");
+  });
+
+  it("preserves Unicode (CJK, emoji)", () => {
+    expect(pathsToShellArgs(["/写真/猫🐈.jpg"])).toBe('"/写真/猫🐈.jpg" ');
+  });
+});
+
+describe("pathsToShellArgs — SECURITY: shell injection prevention", () => {
+  // These tests guard against command injection via malicious filenames.
+  // POSIX double quotes still allow $, `, and \ to be active.
+
+  it("escapes $ to prevent variable expansion (CRITICAL)", () => {
+    const result = pathsToShellArgs(["/tmp/$HOME"]);
+    // The $ must be backslash-escaped so the shell sees a literal $
+    expect(result).toBe('"/tmp/\\$HOME" ');
+    // No unescaped $ (every $ must be preceded by \)
+    expect(result).not.toMatch(/[^\\]\$/);
+  });
+
+  it("escapes $() to prevent command substitution (CRITICAL)", () => {
+    const result = pathsToShellArgs(["/tmp/$(rm -rf ~).txt"]);
+    expect(result).toContain("\\$");
+    // The $( must not appear unescaped
+    expect(result).not.toMatch(/[^\\]\$\(/);
+  });
+
+  it("escapes backticks to prevent legacy command substitution (CRITICAL)", () => {
+    const result = pathsToShellArgs(["/tmp/`whoami`.txt"]);
+    expect(result).toContain("\\`");
+    expect(result).not.toMatch(/[^\\]`/);
+  });
+
+  it("strips newlines so a path can't break out into a new shell command", () => {
+    const result = pathsToShellArgs(["/tmp/foo.txt\nrm -rf ~"]);
+    // Newline must NOT survive — rm should not appear on its own line
+    expect(result).not.toContain("\n");
+    expect(result).not.toContain("\r");
+  });
+
+  it("escapes ! (history expansion in interactive bash)", () => {
+    const result = pathsToShellArgs(["/tmp/!important.txt"]);
+    expect(result).toContain("\\!");
+  });
+
+  it("handles multiple injection vectors combined", () => {
+    const evil = '/tmp/$(id)`whoami`"hi"\\path';
+    const result = pathsToShellArgs([evil]);
+    // Every special char escaped
+    expect(result).toContain("\\$");
+    expect(result).toContain("\\`");
+    expect(result).toContain('\\"');
+    expect(result).toContain("\\\\");
+  });
+
+  it("does NOT mangle a normal path with safe characters", () => {
+    expect(pathsToShellArgs(["/Users/me/Documents/foo bar.txt"])).toBe(
+      '"/Users/me/Documents/foo bar.txt" ',
+    );
   });
 });

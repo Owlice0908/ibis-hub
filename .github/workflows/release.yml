@@ -67,7 +67,9 @@ jobs:
           node -e "const fs=require('fs');const f='src-tauri/Cargo.toml';let c=fs.readFileSync(f,'utf-8');c=c.replace(/^version = \"[^\"]*\"/m,'version = \"$VERSION\"');fs.writeFileSync(f,c);"
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        # Pinned to specific tag (not @v0) so that breaking changes in
+        # tauri-action don't silently break our release pipeline.
+        uses: tauri-apps/tauri-action@v0.5.22
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -285,3 +287,13 @@ jobs:
         env:
           VERIFY_UPDATER_PLATFORM: linux-x86_64
         run: ./target/release/verify-updater
+
+      # Once all platforms verify, automatically publish the draft release.
+      # If any verify step above fails, this step is skipped, leaving the
+      # release as a draft so a broken auto-update can never go live.
+      - name: Publish release (only after all signature checks pass)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+          echo "✓ Release $GITHUB_REF_NAME is now public"
