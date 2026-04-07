@@ -6,6 +6,7 @@ import SplashScreen from "./components/SplashScreen";
 import TerminalGrid from "./components/TerminalGrid";
 import { useWS } from "./useWebSocket";
 import { useTauriTransport } from "./useTauriTransport";
+import { findDropTargetSession, pathsToShellArgs } from "./lib/terminalUtils";
 import type { Session, LayoutMode, ThemeMode } from "./types";
 
 // Detect Tauri at module level (constant, safe for hooks)
@@ -88,26 +89,17 @@ function App() {
             window.dispatchEvent(new CustomEvent("ibis-native-drop"));
 
             if (paths.length > 0) {
-              // Find which session pane the drop occurred over
-              let sid = focusedSessionIdRef.current;
-              let how = "focused";
-              if (pos) {
-                const cx = pos.x / scale;
-                const cy = pos.y / scale;
-                const el = document.elementFromPoint(cx, cy);
-                const pane = el?.closest("[data-session-id]");
-                if (pane) {
-                  sid = pane.getAttribute("data-session-id") || sid;
-                  how = "position";
-                }
-              }
-              dlog(`drop target: sid=${sid}, how=${how}`);
+              // Use unit-tested helper to find the target session by drop position
+              const sid = findDropTargetSession(
+                pos,
+                scale,
+                document,
+                focusedSessionIdRef.current,
+              );
+              dlog(`drop target: sid=${sid}`);
 
               if (sid) {
-                const data = paths
-                  .map((p: string) => `"${p.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
-                  .join(" ");
-                send({ type: "write", id: sid, data: data + " " });
+                send({ type: "write", id: sid, data: pathsToShellArgs(paths) });
               } else {
                 dlog("drop: no target session");
               }
@@ -222,8 +214,7 @@ function App() {
           // belongs to a specific pane, so the target is unambiguous.
           const targetId = msg.sessionId;
           if (Array.isArray(msg.paths) && msg.paths.length > 0 && targetId) {
-            const data = msg.paths.map((p: string) => `"${p.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(" ");
-            send({ type: "write", id: targetId, data: data + " " });
+            send({ type: "write", id: targetId, data: pathsToShellArgs(msg.paths) });
           }
           break;
         }

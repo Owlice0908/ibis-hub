@@ -5,6 +5,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import type { ThemeMode } from "../types";
+import { decideKeyAction, isAmbiguousWide } from "../lib/terminalUtils";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -206,46 +207,27 @@ export default function TerminalPane({
     // Copy/paste shortcuts (Ctrl+Shift+C/V for Linux/Windows, Cmd+C/V for Mac)
     const isMac = navigator.platform.toLowerCase().includes("mac");
     terminal.attachCustomKeyEventHandler((e) => {
-      if (e.type !== "keydown") return true;
+      // Delegate the decision to a pure function so it stays unit-testable.
+      // See src/lib/terminalUtils.ts and tests/unit/terminalUtils.test.ts.
+      const decision = decideKeyAction(
+        {
+          type: e.type,
+          key: e.key,
+          ctrlKey: e.ctrlKey,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+          metaKey: e.metaKey,
+          isComposing: e.isComposing,
+        },
+        isMac,
+        terminal.hasSelection(),
+      );
 
-      // Mac WebKit: Shift+letter (and other printable shift combos) have a
-      // first-character delay because the hidden textarea waits for dead-key
-      // composition. Bypass xterm's textarea by writing directly. Skip during
-      // IME composition so Japanese input still works.
-      if (
-        isMac &&
-        !e.isComposing &&
-        !e.ctrlKey &&
-        !e.metaKey &&
-        !e.altKey &&
-        e.shiftKey &&
-        e.key.length === 1
-      ) {
+      if (decision === "shift-direct") {
         wsSend({ type: "write", id: sessionId, data: e.key });
         return false;
       }
-
-      const key = e.key.toLowerCase();
-      const hasSelection = terminal.hasSelection();
-
-      // Copy:
-      //   Mac:     Cmd+C
-      //   Win/Lin: Ctrl+Shift+C  OR  Ctrl+C (when text is selected)
-      // Ctrl+C without selection still sends SIGINT (default behavior).
-      const isCopy = isMac
-        ? (e.metaKey && key === "c")
-        : (e.ctrlKey && (e.shiftKey || hasSelection) && key === "c");
-
-      // Paste:
-      //   Mac:     Cmd+V
-      //   Win/Lin: Ctrl+Shift+V  OR  Ctrl+V
-      // Ctrl+V is rarely used in shells (readline literal-next), so we bind it
-      // to paste which matches Windows Terminal / VSCode behavior.
-      const isPaste = isMac
-        ? (e.metaKey && key === "v")
-        : (e.ctrlKey && key === "v");
-
-      if (isCopy) {
+      if (decision === "copy") {
         const sel = terminal.getSelection();
         if (sel) {
           navigator.clipboard.writeText(sel).catch(() => {});
@@ -253,12 +235,15 @@ export default function TerminalPane({
         }
         return false;
       }
-      if (isPaste) {
-        navigator.clipboard.readText().then((text) => {
-          wsSend({ type: "write", id: sessionId, data: text });
-        }).catch(() => {
-          // Clipboard access denied or unavailable — ignore silently
-        });
+      if (decision === "paste") {
+        navigator.clipboard
+          .readText()
+          .then((text) => {
+            wsSend({ type: "write", id: sessionId, data: text });
+          })
+          .catch(() => {
+            // Clipboard access denied or unavailable — ignore silently
+          });
         return false;
       }
       // Select + Backspace/Delete: delete selected text by sending backspaces
@@ -297,28 +282,7 @@ export default function TerminalPane({
         if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) return 0;
         return 1;
       };
-      const isAmbiguousWide = (cp: number): boolean => {
-        // Common East Asian Ambiguous ranges that CJK fonts render as wide
-        return (
-          (cp >= 0x2460 && cp <= 0x24ff) || // Enclosed Alphanumerics: ①②③ ⓿ Ⓐ
-          (cp >= 0x2500 && cp <= 0x257f) || // Box Drawing
-          (cp >= 0x2580 && cp <= 0x259f) || // Block Elements
-          (cp >= 0x25a0 && cp <= 0x25ff) || // Geometric Shapes: ◯ ■ ▲
-          (cp >= 0x2600 && cp <= 0x26ff) || // Misc Symbols: ★ ☆ ☀
-          (cp >= 0x2700 && cp <= 0x27bf) || // Dingbats: ✓ ✗ ✚
-          (cp >= 0x2070 && cp <= 0x209f) || // Super/Subscripts
-          (cp >= 0x2150 && cp <= 0x218f) || // Number Forms: ⅓ ⅔
-          (cp >= 0x2190 && cp <= 0x21ff) || // Arrows: ← → ↑ ↓
-          (cp >= 0x2200 && cp <= 0x22ff) || // Math operators: ∀ ∃ ∈
-          (cp >= 0x2300 && cp <= 0x23ff) || // Misc technical
-          (cp >= 0x2e80 && cp <= 0x2eff) || // CJK Radicals Supplement
-          (cp >= 0x3000 && cp <= 0x303f) || // CJK Symbols and Punctuation:
-          (cp === 0x00a7) || (cp === 0x00a8) || // § ¨
-          (cp === 0x00b0) || (cp === 0x00b1) || // ° ±
-          (cp === 0x00b4) || (cp === 0x00b6) || // ´ ¶
-          (cp === 0x00d7) || (cp === 0x00f7)    // × ÷
-        );
-      };
+      // isAmbiguousWide is shared with src/lib/terminalUtils.ts and unit-tested
       const cjkProvider = {
         version: "cjk",
         wcwidth: (cp: number): 0 | 1 | 2 => {

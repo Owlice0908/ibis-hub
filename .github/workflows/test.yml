@@ -60,6 +60,9 @@ jobs:
       - name: Frontend build
         run: npx vite build
 
+      - name: Frontend unit tests (vitest)
+        run: npm test
+
       # ---------- Rust checks ----------
       - name: Rust format check
         working-directory: src-tauri
