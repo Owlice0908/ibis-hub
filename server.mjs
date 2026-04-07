@@ -314,7 +314,7 @@ paths.join('|');`;
             if (result.stdout) paths = result.stdout.trim().split("|").filter(Boolean);
           }
         } catch {}
-        ws.send(JSON.stringify({ type: "files_picked", paths }));
+        ws.send(JSON.stringify({ type: "files_picked", paths, sessionId: msg.sessionId }));
         break;
       }
 

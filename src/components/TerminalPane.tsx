@@ -6,6 +6,8 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import type { ThemeMode } from "../types";
 
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 const DARK_THEME = {
   background: "#0f0f0f",
   foreground: "#e5e5e5",
@@ -75,6 +77,7 @@ export default function TerminalPane({
   onDetach,
   onClose,
 }: TerminalPaneProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -130,6 +133,35 @@ export default function TerminalPane({
     });
   }, [wsSend, sessionId]);
 
+  // Tauri-only: native drag-and-drop visual feedback via custom events from App.tsx
+  useEffect(() => {
+    if (!isTauri) return;
+    const root = rootRef.current;
+    if (!root) return;
+
+    const handleDragOver = (e: Event) => {
+      const { x, y } = (e as CustomEvent).detail;
+      const scale = window.devicePixelRatio || 1;
+      const rect = root.getBoundingClientRect();
+      const cx = x / scale;
+      const cy = y / scale;
+      const isOver = cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom;
+      setDragOver(isOver);
+    };
+
+    const handleClear = () => setDragOver(false);
+
+    window.addEventListener("ibis-native-dragover", handleDragOver);
+    window.addEventListener("ibis-native-dragleave", handleClear);
+    window.addEventListener("ibis-native-drop", handleClear);
+
+    return () => {
+      window.removeEventListener("ibis-native-dragover", handleDragOver);
+      window.removeEventListener("ibis-native-dragleave", handleClear);
+      window.removeEventListener("ibis-native-drop", handleClear);
+    };
+  }, []);
+
   // Flush buffered data, refit, and scroll to bottom when becoming visible
   useEffect(() => {
     visibleRef.current = isVisible;
@@ -167,7 +199,7 @@ export default function TerminalPane({
       cursorStyle: "bar",
       scrollback: 1000,
       allowProposedApi: true,
-      rightClickSelectsWord: true,
+      rightClickSelectsWord: false, // We handle right-click ourselves (copy/paste)
       smoothScrollDuration: 0,
     });
 
@@ -175,14 +207,53 @@ export default function TerminalPane({
     const isMac = navigator.platform.toLowerCase().includes("mac");
     terminal.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
-      const copyKey = isMac ? (e.metaKey && e.key === "c") : (e.ctrlKey && e.shiftKey && e.key === "C");
-      const pasteKey = isMac ? (e.metaKey && e.key === "v") : (e.ctrlKey && e.shiftKey && e.key === "V");
-      if (copyKey) {
-        const sel = terminal.getSelection();
-        if (sel) navigator.clipboard.writeText(sel);
+
+      // Mac WebKit: Shift+letter (and other printable shift combos) have a
+      // first-character delay because the hidden textarea waits for dead-key
+      // composition. Bypass xterm's textarea by writing directly. Skip during
+      // IME composition so Japanese input still works.
+      if (
+        isMac &&
+        !e.isComposing &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        e.shiftKey &&
+        e.key.length === 1
+      ) {
+        wsSend({ type: "write", id: sessionId, data: e.key });
         return false;
       }
-      if (pasteKey) {
+
+      const key = e.key.toLowerCase();
+      const hasSelection = terminal.hasSelection();
+
+      // Copy:
+      //   Mac:     Cmd+C
+      //   Win/Lin: Ctrl+Shift+C  OR  Ctrl+C (when text is selected)
+      // Ctrl+C without selection still sends SIGINT (default behavior).
+      const isCopy = isMac
+        ? (e.metaKey && key === "c")
+        : (e.ctrlKey && (e.shiftKey || hasSelection) && key === "c");
+
+      // Paste:
+      //   Mac:     Cmd+V
+      //   Win/Lin: Ctrl+Shift+V  OR  Ctrl+V
+      // Ctrl+V is rarely used in shells (readline literal-next), so we bind it
+      // to paste which matches Windows Terminal / VSCode behavior.
+      const isPaste = isMac
+        ? (e.metaKey && key === "v")
+        : (e.ctrlKey && key === "v");
+
+      if (isCopy) {
+        const sel = terminal.getSelection();
+        if (sel) {
+          navigator.clipboard.writeText(sel).catch(() => {});
+          terminal.clearSelection();
+        }
+        return false;
+      }
+      if (isPaste) {
         navigator.clipboard.readText().then((text) => {
           wsSend({ type: "write", id: sessionId, data: text });
         }).catch(() => {
@@ -284,6 +355,29 @@ export default function TerminalPane({
       wsSend({ type: "write", id: sessionId, data });
     });
 
+    // Right-click: Windows Terminal style smart copy/paste.
+    // If text is selected → copy + clear selection.
+    // Otherwise → paste from clipboard.
+    // Always prevents default (no link open, no context menu).
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!alive) return;
+      if (terminal.hasSelection()) {
+        const sel = terminal.getSelection();
+        if (sel) {
+          navigator.clipboard.writeText(sel).catch(() => {});
+          terminal.clearSelection();
+        }
+      } else {
+        navigator.clipboard.readText().then((text) => {
+          if (alive) wsSend({ type: "write", id: sessionId, data: text });
+        }).catch(() => {});
+      }
+    };
+    const containerEl = termRef.current;
+    containerEl?.addEventListener("contextmenu", handleContextMenu);
+
     const observer = new ResizeObserver(() => handleResize());
     observer.observe(termRef.current);
 
@@ -291,6 +385,7 @@ export default function TerminalPane({
       alive = false;
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       observer.disconnect();
+      containerEl?.removeEventListener("contextmenu", handleContextMenu);
       onData.dispose();
       unsubscribe();
       terminal.dispose();
@@ -301,35 +396,39 @@ export default function TerminalPane({
 
   return (
     <div
-      className={`flex flex-col bg-bg min-h-0 h-full relative ${dragOver ? "ring-2 ring-accent ring-inset" : ""}`}
-      onDragEnter={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dragDepthRef.current++;
-        setDragOver(true);
-      }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-      onDragLeave={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dragDepthRef.current--;
-        if (dragDepthRef.current <= 0) {
+      ref={rootRef}
+      data-session-id={sessionId}
+      className={`flex flex-col bg-bg min-h-0 min-w-0 h-full w-full relative overflow-hidden ${dragOver ? "ring-2 ring-accent ring-inset" : ""}`}
+      {...(!isTauri ? {
+        onDragEnter: (e: React.DragEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dragDepthRef.current++;
+          setDragOver(true);
+        },
+        onDragOver: (e: React.DragEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+        },
+        onDragLeave: (e: React.DragEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          dragDepthRef.current--;
+          if (dragDepthRef.current <= 0) {
+            dragDepthRef.current = 0;
+            setDragOver(false);
+          }
+        },
+        onDrop: (e: React.DragEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
           dragDepthRef.current = 0;
           setDragOver(false);
-        }
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        dragDepthRef.current = 0;
-        setDragOver(false);
-        if (e.dataTransfer.files.length > 0) {
-          handleFileDrop(e.dataTransfer.files);
-        }
-      }}
+          if (e.dataTransfer.files.length > 0) {
+            handleFileDrop(e.dataTransfer.files);
+          }
+        },
+      } : {})}
     >
       <div className="flex items-center justify-between px-2 py-1 bg-surface border-b border-border">
         <span className="text-sm text-text-muted font-medium truncate">{sessionName}</span>
@@ -361,7 +460,7 @@ export default function TerminalPane({
           )}
         </div>
       </div>
-      <div ref={termRef} className="flex-1 min-h-0 overflow-hidden" />
+      <div ref={termRef} className="flex-1 min-h-0 min-w-0 overflow-hidden" />
       {dragOver && (
         <div className="absolute inset-0 bg-accent/10 flex items-center justify-center pointer-events-none z-10">
           <div className="bg-surface border border-accent rounded-lg px-6 py-3 text-text font-medium shadow-lg pointer-events-none">

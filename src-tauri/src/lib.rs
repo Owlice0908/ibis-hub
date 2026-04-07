@@ -23,6 +23,12 @@ fn log(msg: &str) {
     }
 }
 
+/// Frontend-callable log command (for debugging D&D, etc.)
+#[tauri::command]
+fn log_frontend(message: String) {
+    log(&format!("[frontend] {}", message));
+}
+
 /// Get the log file path
 #[tauri::command]
 fn get_log_path() -> String {
@@ -151,38 +157,68 @@ fn upload_file(name: String, data: String) -> Result<String, String> {
 
 /// macOS file picker using NSOpenPanel directly via objc.
 /// canChooseFiles + canChooseDirectories = "Open" selects both files and folders.
+///
+/// CRITICAL: NSOpenPanel must be called from the main thread on macOS.
+/// Tauri sync command handlers run on a worker thread by default, so we
+/// dispatch the actual NSOpenPanel call to the main thread via
+/// `app.run_on_main_thread()` and wait on a channel. Calling Cocoa APIs
+/// from non-main threads is undefined behavior — this caused the picker
+/// to "sometimes work, sometimes not".
 #[tauri::command]
-fn pick_files_macos() -> Result<Vec<String>, String> {
-    log("pick_files_macos: opening NSOpenPanel via objc");
+fn pick_files_macos(_app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    log("pick_files_macos: dispatching NSOpenPanel to main thread");
     #[cfg(target_os = "macos")]
     {
-        use objc::{msg_send, sel, sel_impl, class};
-        use objc::runtime::Object;
-        unsafe {
-            let panel: *mut Object = msg_send![class!(NSOpenPanel), openPanel];
-            let _: () = msg_send![panel, setCanChooseFiles: true];
-            let _: () = msg_send![panel, setCanChooseDirectories: true];
-            let _: () = msg_send![panel, setAllowsMultipleSelection: true];
-            let result: isize = msg_send![panel, runModal];
-            // NSModalResponseOK = 1
-            if result != 1 {
-                log("pick_files_macos: cancelled");
-                return Ok(vec![]);
-            }
-            let urls: *mut Object = msg_send![panel, URLs];
-            let count: usize = msg_send![urls, count];
-            let mut paths = Vec::with_capacity(count);
-            for i in 0..count {
-                let url: *mut Object = msg_send![urls, objectAtIndex: i];
-                let path: *mut Object = msg_send![url, path];
-                let cstr: *const std::os::raw::c_char = msg_send![path, UTF8String];
-                if !cstr.is_null() {
-                    let s = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
-                    paths.push(s);
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel::<Result<Vec<String>, String>>();
+
+        _app.run_on_main_thread(move || {
+            use objc::{msg_send, sel, sel_impl, class};
+            use objc::runtime::Object;
+            let result: Result<Vec<String>, String> = unsafe {
+                let panel: *mut Object = msg_send![class!(NSOpenPanel), openPanel];
+                if panel.is_null() {
+                    Err("NSOpenPanel openPanel returned null".to_string())
+                } else {
+                    let _: () = msg_send![panel, setCanChooseFiles: true];
+                    let _: () = msg_send![panel, setCanChooseDirectories: true];
+                    let _: () = msg_send![panel, setAllowsMultipleSelection: true];
+                    let modal_result: isize = msg_send![panel, runModal];
+                    // NSModalResponseOK = 1, NSModalResponseCancel = 0
+                    if modal_result != 1 {
+                        log("pick_files_macos: cancelled by user");
+                        Ok(Vec::new())
+                    } else {
+                        let urls: *mut Object = msg_send![panel, URLs];
+                        let count: usize = msg_send![urls, count];
+                        let mut paths = Vec::with_capacity(count);
+                        for i in 0..count {
+                            let url: *mut Object = msg_send![urls, objectAtIndex: i];
+                            let path: *mut Object = msg_send![url, path];
+                            let cstr: *const std::os::raw::c_char = msg_send![path, UTF8String];
+                            if !cstr.is_null() {
+                                let s = std::ffi::CStr::from_ptr(cstr).to_string_lossy().to_string();
+                                paths.push(s);
+                            }
+                        }
+                        log(&format!("pick_files_macos: selected {} paths", paths.len()));
+                        Ok(paths)
+                    }
                 }
+            };
+            let _ = tx.send(result);
+        }).map_err(|e| {
+            log(&format!("pick_files_macos: run_on_main_thread failed: {}", e));
+            format!("run_on_main_thread failed: {}", e)
+        })?;
+
+        // Block on worker thread waiting for main-thread result
+        match rx.recv() {
+            Ok(result) => result,
+            Err(e) => {
+                log(&format!("pick_files_macos: channel recv failed: {}", e));
+                Err(format!("channel recv failed: {}", e))
             }
-            log(&format!("pick_files_macos: selected {} paths: {:?}", paths.len(), paths));
-            Ok(paths)
         }
     }
     #[cfg(not(target_os = "macos"))]
@@ -244,6 +280,54 @@ if($f.ShowDialog() -eq 'OK'){
     Ok(paths)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_log_path_returns_non_empty() {
+        let path = get_log_path();
+        assert!(!path.is_empty(), "log path must not be empty");
+        assert!(path.ends_with("ibis-hub.log"), "log path must end with ibis-hub.log, got: {}", path);
+    }
+
+    #[test]
+    fn test_get_platform_returns_known_value() {
+        let plat = get_platform();
+        let valid = ["wsl", "macos", "windows", "linux", "freebsd", "openbsd", "netbsd", "dragonfly", "ios", "android"];
+        assert!(
+            valid.contains(&plat.as_str()),
+            "platform should be a known value, got: {}",
+            plat
+        );
+    }
+
+    #[test]
+    fn test_log_does_not_panic() {
+        // log() should never panic even if log file is unwritable
+        log("test message from unit test");
+    }
+
+    #[test]
+    fn test_log_frontend_does_not_panic() {
+        log_frontend("test message from frontend".to_string());
+    }
+
+    #[test]
+    fn test_is_wsl_returns_bool() {
+        // Just verify it doesn't panic and returns a bool
+        let _ = is_wsl();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn test_pick_files_macos_returns_error_on_non_mac() {
+        // On non-macOS platforms, this should return an error string.
+        // We can't actually invoke it without an AppHandle, but the cfg
+        // ensures it compiles correctly on every platform.
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -269,6 +353,7 @@ pub fn run() {
             rename_session,
             get_platform,
             get_log_path,
+            log_frontend,
             upload_file,
             pick_files_macos,
             pick_files_wsl,

@@ -74,6 +74,16 @@ html, body, #root {
 .xterm {
   padding: 8px;
   padding-right: 14px; /* prevent scrollbar from overlapping text */
+  cursor: text; /* I-beam cursor over terminal area */
+}
+/* Allow text selection inside terminal (overrides global user-select: none) */
+.xterm,
+.xterm * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+.xterm .xterm-screen {
+  cursor: text;
 }
 .xterm-viewport::-webkit-scrollbar {
   width: 6px;

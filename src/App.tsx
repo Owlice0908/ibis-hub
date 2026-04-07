@@ -69,20 +69,68 @@ function App() {
       }
 
       // Native drag-and-drop: Tauri provides file paths directly
+      // Uses position-based targeting to find the correct session pane
+      const { invoke } = await import("@tauri-apps/api/core");
+      const dlog = (msg: string) => {
+        invoke("log_frontend", { message: `dnd: ${msg}` }).catch(() => {});
+      };
       try {
         const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+        dlog("registering onDragDropEvent listener");
         dragDropUnlisten = await getCurrentWebview().onDragDropEvent((event) => {
-          if (event.payload.type === "drop" && event.payload.paths.length > 0) {
-            const sid = focusedSessionIdRef.current;
-            if (sid) {
-              const data = event.payload.paths
-                .map((p: string) => `"${p.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
-                .join(" ");
-              send({ type: "write", id: sid, data: data + " " });
+          const { type } = event.payload;
+          const scale = window.devicePixelRatio || 1;
+
+          if (type === "drop") {
+            const paths = event.payload.paths || [];
+            const pos = event.payload.position;
+            dlog(`drop: paths=${paths.length}, pos=${pos ? `${pos.x},${pos.y}` : "null"}, scale=${scale}`);
+            window.dispatchEvent(new CustomEvent("ibis-native-drop"));
+
+            if (paths.length > 0) {
+              // Find which session pane the drop occurred over
+              let sid = focusedSessionIdRef.current;
+              let how = "focused";
+              if (pos) {
+                const cx = pos.x / scale;
+                const cy = pos.y / scale;
+                const el = document.elementFromPoint(cx, cy);
+                const pane = el?.closest("[data-session-id]");
+                if (pane) {
+                  sid = pane.getAttribute("data-session-id") || sid;
+                  how = "position";
+                }
+              }
+              dlog(`drop target: sid=${sid}, how=${how}`);
+
+              if (sid) {
+                const data = paths
+                  .map((p: string) => `"${p.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
+                  .join(" ");
+                send({ type: "write", id: sid, data: data + " " });
+              } else {
+                dlog("drop: no target session");
+              }
             }
+          } else if (type === "enter") {
+            dlog(`enter: paths=${event.payload.paths?.length || 0}`);
+            const pos = event.payload.position;
+            if (pos) {
+              window.dispatchEvent(new CustomEvent("ibis-native-dragover", { detail: pos }));
+            }
+          } else if (type === "over") {
+            const pos = event.payload.position;
+            if (pos) {
+              window.dispatchEvent(new CustomEvent("ibis-native-dragover", { detail: pos }));
+            }
+          } else if (type === "leave") {
+            dlog("leave");
+            window.dispatchEvent(new CustomEvent("ibis-native-dragleave"));
           }
         });
+        dlog("onDragDropEvent listener registered OK");
       } catch (e) {
+        dlog(`setup failed: ${e}`);
         console.error("Drag-drop setup failed:", e);
       }
     })();
@@ -169,8 +217,10 @@ function App() {
           alert(msg.error);
           break;
         case "files_picked": {
-          // Send picked file paths to the session that triggered the pick
-          const targetId = msg.sessionId || focusedSessionIdRef.current;
+          // Always send to the session that triggered +File (msg.sessionId).
+          // Do NOT fall back to focused session — the +File button always
+          // belongs to a specific pane, so the target is unambiguous.
+          const targetId = msg.sessionId;
           if (Array.isArray(msg.paths) && msg.paths.length > 0 && targetId) {
             const data = msg.paths.map((p: string) => `"${p.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(" ");
             send({ type: "write", id: targetId, data: data + " " });

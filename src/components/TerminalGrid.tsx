@@ -54,11 +54,11 @@ export default function TerminalGrid({
           />
         </div>
         {/* Side panels */}
-        <div className="flex flex-col min-h-0 overflow-hidden border-l border-border" style={{ flex: "3 1 0%" }}>
+        <div className="flex flex-col min-h-0 min-w-0 overflow-hidden border-l border-border" style={{ flex: "3 1 0%" }}>
           {sideIds.map((id) => {
             const session = sessions.find((s) => s.id === id);
             return (
-              <div key={id} className="flex-1 min-h-0 overflow-hidden border-b border-border last:border-b-0">
+              <div key={id} className="flex-1 min-h-0 min-w-0 overflow-hidden border-b border-border last:border-b-0">
                 <TerminalPane
                   sessionId={id}
                   sessionName={session?.name || "Session"}
