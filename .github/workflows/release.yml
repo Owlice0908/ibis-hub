@@ -88,46 +88,70 @@ jobs:
       # it looks for them under the renamed asset path while the bundler emits
       # them under the original path. Find and upload them manually so the
       # final assemble-latest-json job can construct latest.json.
-      - name: Upload updater signature files
+      # Manually sign updater bundles. tauri-action's bundler creates .app.tar.gz
+      # via plain `tar czf` without signing, so we sign them ourselves with the
+      # tauri CLI (already installed globally by tauri-action).
+      - name: Sign and upload updater bundles
         if: matrix.platform != 'windows-latest'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           set -e
           VERSION="${GITHUB_REF_NAME#v}"
-          echo "=== Diagnostic ==="
-          echo "PWD: $(pwd)"
-          echo "WORKSPACE: $GITHUB_WORKSPACE"
-          echo "Listing target/ existence:"
-          ls -la src-tauri/target 2>&1 || echo "(no src-tauri/target relative)"
-          ls -la "$GITHUB_WORKSPACE/src-tauri/target" 2>&1 || echo "(no workspace target)"
-          echo "Searching from /Users/runner/work entire tree for .sig:"
-          find "$GITHUB_WORKSPACE" -type f -name "*.sig" 2>&1 || true
-          find / -type f -name "Ibis*sig" 2>/dev/null || true
-          echo "=== End diagnostic ==="
 
-          FOUND=0
-          while IFS= read -r sig; do
-            [ -z "$sig" ] && continue
-            FOUND=1
-            echo "Found sig: $sig"
-            if [[ "$sig" == *"aarch64-apple-darwin"* ]]; then
-              renamed="Ibis.Hub_aarch64.app.tar.gz.sig"
-            elif [[ "$sig" == *"x86_64-apple-darwin"* ]]; then
-              renamed="Ibis.Hub_x64.app.tar.gz.sig"
-            elif [[ "$sig" == *"AppImage"* ]]; then
-              renamed="Ibis.Hub_${VERSION}_amd64.AppImage.sig"
-            else
-              renamed="$(basename "$sig")"
+          # Locate any .app.tar.gz files. tauri-action may have already deleted
+          # them after upload, so re-create from .app directory if needed.
+          for app_dir in src-tauri/target/*/release/bundle/macos/*.app; do
+            [ -d "$app_dir" ] || continue
+            bundle_dir="$(dirname "$app_dir")"
+            app_name="$(basename "$app_dir")"            # "Ibis Hub.app"
+            tar_path="$bundle_dir/${app_name}.tar.gz"     # "Ibis Hub.app.tar.gz"
+
+            if [ ! -f "$tar_path" ]; then
+              echo "Re-creating $tar_path from $app_dir"
+              (cd "$bundle_dir" && tar czf "${app_name}.tar.gz" "$app_name")
             fi
-            cp "$sig" "/tmp/$renamed"
-            echo "Uploading $renamed to release ${GITHUB_REF_NAME}"
-            gh release upload "$GITHUB_REF_NAME" "/tmp/$renamed" --repo "$GITHUB_REPOSITORY" --clobber
-          done < <(find "$GITHUB_WORKSPACE" -type f -name "*.sig" 2>/dev/null || true)
-          if [ "$FOUND" -eq 0 ]; then
-            echo "No .sig files found — see diagnostic above"
-          fi
+
+            echo "Signing $tar_path"
+            # tauri signer sign reads TAURI_SIGNING_PRIVATE_KEY from env.
+            # Use --password '' for keys without a password.
+            npx --yes @tauri-apps/cli@v2 signer sign --password "" "$tar_path" || \
+              tauri signer sign --password "" "$tar_path" || \
+              echo "WARNING: signing failed for $tar_path"
+
+            sig_path="${tar_path}.sig"
+            if [ -f "$sig_path" ]; then
+              # Determine renamed asset name based on target arch
+              target_dir="$(echo "$app_dir" | sed 's|.*/target/\([^/]*\)/.*|\1|')"
+              case "$target_dir" in
+                aarch64-apple-darwin) renamed="Ibis.Hub_aarch64.app.tar.gz.sig" ;;
+                x86_64-apple-darwin)  renamed="Ibis.Hub_x64.app.tar.gz.sig" ;;
+                *) renamed="$(basename "$sig_path")" ;;
+              esac
+              cp "$sig_path" "/tmp/$renamed"
+              echo "Uploading $renamed to release ${GITHUB_REF_NAME}"
+              gh release upload "$GITHUB_REF_NAME" "/tmp/$renamed" --repo "$GITHUB_REPOSITORY" --clobber
+            else
+              echo "ERROR: no .sig produced at $sig_path"
+              ls -la "$bundle_dir" || true
+            fi
+          done
+
+          # Linux: sign AppImage if present
+          for app_image in src-tauri/target/release/bundle/appimage/*.AppImage; do
+            [ -f "$app_image" ] || continue
+            echo "Signing $app_image"
+            npx --yes @tauri-apps/cli@v2 signer sign --password "" "$app_image" || \
+              echo "WARNING: signing failed for $app_image"
+            sig_path="${app_image}.sig"
+            if [ -f "$sig_path" ]; then
+              renamed="Ibis.Hub_${VERSION}_amd64.AppImage.sig"
+              cp "$sig_path" "/tmp/$renamed"
+              gh release upload "$GITHUB_REF_NAME" "/tmp/$renamed" --repo "$GITHUB_REPOSITORY" --clobber
+            fi
+          done
 
       - name: Upload updater signature files (Windows)
         if: matrix.platform == 'windows-latest'
