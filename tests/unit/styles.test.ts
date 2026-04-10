@@ -50,14 +50,13 @@ describe("TerminalPane.tsx — wrap fix layout", () => {
     );
   });
 
-  it("root div has min-w-0 and w-full and overflow-hidden", () => {
-    // The root div line that includes ref={rootRef} and the className.
+  it("root div does NOT have min-w-0 (prevents vertical text in narrow grid panes)", () => {
+    // min-w-0 on root was causing panes to shrink to near-zero width in grid
+    // layout, making CJK text display vertically. Only termRef has min-w-0.
     const rootMatch = source.match(/ref=\{rootRef\}[\s\S]*?className=\{[^\}]*\}/);
     expect(rootMatch, "must find root div").not.toBeNull();
     const cls = rootMatch![0];
-    expect(cls).toContain("min-w-0");
-    expect(cls).toContain("w-full");
-    expect(cls).toContain("overflow-hidden");
+    expect(cls).not.toContain("min-w-0");
   });
 
   it("xterm container div (termRef) has min-w-0 and overflow-hidden", () => {

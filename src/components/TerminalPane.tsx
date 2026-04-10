@@ -429,7 +429,7 @@ export default function TerminalPane({
     <div
       ref={rootRef}
       data-session-id={sessionId}
-      className={`flex flex-col bg-bg min-h-0 min-w-0 h-full w-full relative overflow-hidden ${dragOver ? "ring-2 ring-accent ring-inset" : ""}`}
+      className={`flex flex-col bg-bg min-h-0 h-full relative ${dragOver ? "ring-2 ring-accent ring-inset" : ""}`}
       {...(!isTauri ? {
         onDragEnter: (e: React.DragEvent) => {
           e.preventDefault();
