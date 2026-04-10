@@ -32,6 +32,27 @@ export function isAmbiguousWide(cp: number): boolean {
 }
 
 /**
+ * Returns true if the codepoint MUST be rendered at 1 column even if the
+ * base Unicode provider (or the font) thinks it's wide.
+ *
+ * TUI applications (Claude Code, vim, htop, fzf, etc.) draw borders and
+ * progress bars with these characters and expect them to be exactly 1 col.
+ * If the system/font treats them as 2 cols, every other cell becomes empty
+ * padding and the border looks like a dotted line.
+ *
+ * This is the "force narrow" counterpart of isAmbiguousWide, and takes
+ * priority over the base provider's width.
+ */
+export function isForceNarrow(cp: number): boolean {
+  return (
+    (cp >= 0x2500 && cp <= 0x257f) || // Box Drawing: ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼
+    (cp >= 0x2580 && cp <= 0x259f) || // Block Elements: ▀ ▄ █ ░ ▒ ▓
+    (cp >= 0x2190 && cp <= 0x21ff) || // Arrows: ← → ↑ ↓
+    (cp >= 0x25a0 && cp <= 0x25ff) // Geometric Shapes: ■ ▲ ● ◯
+  );
+}
+
+/**
  * Decision the keyboard handler should make for a given keydown event.
  *  - "copy"         : selected text → clipboard, prevent default
  *  - "paste"        : clipboard → terminal, prevent default

@@ -9,6 +9,7 @@ import {
   decideKeyAction,
   decideRightClick,
   isAmbiguousWide,
+  isForceNarrow,
   dndPositionToLogical,
 } from "../lib/terminalUtils";
 
@@ -289,9 +290,14 @@ export default function TerminalPane({
         return 1;
       };
       // isAmbiguousWide is shared with src/lib/terminalUtils.ts and unit-tested
+      // Priority order for width decisions:
+      //   1. isForceNarrow → always 1 (TUI border/progress chars)
+      //   2. isAmbiguousWide → always 2 (①②③ etc.)
+      //   3. base provider → whatever Unicode11 says
       const cjkProvider = {
         version: "cjk",
         wcwidth: (cp: number): 0 | 1 | 2 => {
+          if (isForceNarrow(cp)) return 1;
           if (isAmbiguousWide(cp)) return 2;
           return fallbackWcwidth(cp);
         },
@@ -300,19 +306,21 @@ export default function TerminalPane({
           //   bit 0    : shouldJoin (ZWJ continuation)
           //   bits 1-2 : width (0-3)
           //   bits 3+  : char kind / state
-          // To set width=2 we need bits 1-2 = 0b10, i.e. value 0b100 = 4 = (2 << 1).
-          // Mask 0b110 clears the width bits while preserving shouldJoin (bit 0)
-          // and the higher state bits.
           if (baseProvider && typeof baseProvider.charProperties === "function") {
             const props = baseProvider.charProperties(codepoint, preceding);
+            if (isForceNarrow(codepoint)) {
+              // Force width=1, preserve shouldJoin and state bits
+              return (props & ~0b110) | (1 << 1);
+            }
             if (isAmbiguousWide(codepoint)) {
               return (props & ~0b110) | (2 << 1);
             }
             return props;
           }
-          // Fallback when base provider has no charProperties: encode width
-          // in the same bit positions xterm expects.
-          const width = isAmbiguousWide(codepoint) ? 2 : fallbackWcwidth(codepoint);
+          // Fallback: encode width in xterm's bit layout
+          const width = isForceNarrow(codepoint) ? 1
+            : isAmbiguousWide(codepoint) ? 2
+            : fallbackWcwidth(codepoint);
           return (width << 1);
         },
       };
