@@ -85,20 +85,9 @@ html, body, #root {
 .xterm .xterm-screen {
   cursor: text;
 }
-
-/* Suppress the dotted focus outline that Mac WebKit (and some other
-   browsers) draw on the terminal container and on xterm's hidden
-   textarea / helper elements. The terminal already shows its own cursor
-   so the OS focus ring is redundant and visually noisy. */
-.xterm,
-.xterm:focus,
-.xterm.focus,
-.xterm *,
-.xterm *:focus,
-.xterm-helper-textarea,
+/* Hide xterm's hidden helper textarea focus outline (cosmetic only) */
 .xterm-helper-textarea:focus {
-  outline: none !important;
-  -webkit-tap-highlight-color: transparent;
+  outline: none;
 }
 .xterm-viewport::-webkit-scrollbar {
   width: 6px;

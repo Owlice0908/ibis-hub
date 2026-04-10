@@ -20,35 +20,39 @@ describe("isAmbiguousWide — CJK ambiguous-width detection", () => {
     expect(isAmbiguousWide(0x2473)).toBe(true); // ⑳
   });
 
-  it("treats geometric shapes ◯ ■ ▲ as wide", () => {
-    expect(isAmbiguousWide(0x25cb)).toBe(true); // ◯
-    expect(isAmbiguousWide(0x25a0)).toBe(true); // ■
-    expect(isAmbiguousWide(0x25b2)).toBe(true); // ▲
+  it("does NOT treat box drawing as wide (TUIs like Claude Code draw borders with these)", () => {
+    // Regression: marking these wide caused Claude Code's input border to
+    // render as a dotted line because every other cell became empty padding.
+    expect(isAmbiguousWide(0x2500)).toBe(false); // ─
+    expect(isAmbiguousWide(0x2502)).toBe(false); // │
+    expect(isAmbiguousWide(0x250c)).toBe(false); // ┌
+    expect(isAmbiguousWide(0x2510)).toBe(false); // ┐
+    expect(isAmbiguousWide(0x2514)).toBe(false); // └
+    expect(isAmbiguousWide(0x2518)).toBe(false); // ┘
+    expect(isAmbiguousWide(0x252c)).toBe(false); // ┬
+    expect(isAmbiguousWide(0x2534)).toBe(false); // ┴
   });
 
-  it("treats misc symbols ★ ☆ as wide", () => {
-    expect(isAmbiguousWide(0x2605)).toBe(true); // ★
-    expect(isAmbiguousWide(0x2606)).toBe(true); // ☆
+  it("does NOT treat block elements ▀▄█ as wide (used by progress bars)", () => {
+    expect(isAmbiguousWide(0x2580)).toBe(false); // ▀
+    expect(isAmbiguousWide(0x2584)).toBe(false); // ▄
+    expect(isAmbiguousWide(0x2588)).toBe(false); // █
   });
 
-  it("treats arrows ← → ↑ ↓ as wide", () => {
-    expect(isAmbiguousWide(0x2190)).toBe(true); // ←
-    expect(isAmbiguousWide(0x2191)).toBe(true); // ↑
-    expect(isAmbiguousWide(0x2192)).toBe(true); // →
-    expect(isAmbiguousWide(0x2193)).toBe(true); // ↓
+  it("does NOT treat geometric shapes ▲ ▶ ◯ as wide (TUIs use them as 1-col)", () => {
+    expect(isAmbiguousWide(0x25b2)).toBe(false); // ▲
+    expect(isAmbiguousWide(0x25b6)).toBe(false); // ▶
+    expect(isAmbiguousWide(0x25cb)).toBe(false); // ◯
   });
 
-  it("treats box drawing as wide", () => {
-    expect(isAmbiguousWide(0x2500)).toBe(true); // ─
-    expect(isAmbiguousWide(0x2502)).toBe(true); // │
-    expect(isAmbiguousWide(0x250c)).toBe(true); // ┌
+  it("does NOT treat arrows ← → as wide (TUIs use them as 1-col)", () => {
+    expect(isAmbiguousWide(0x2190)).toBe(false); // ←
+    expect(isAmbiguousWide(0x2192)).toBe(false); // →
   });
 
-  it("treats specific Latin1 symbols ° ± × ÷ as wide", () => {
-    expect(isAmbiguousWide(0x00b0)).toBe(true); // °
-    expect(isAmbiguousWide(0x00b1)).toBe(true); // ±
-    expect(isAmbiguousWide(0x00d7)).toBe(true); // ×
-    expect(isAmbiguousWide(0x00f7)).toBe(true); // ÷
+  it("does NOT treat ★ ✓ etc. as wide (font handles them)", () => {
+    expect(isAmbiguousWide(0x2605)).toBe(false); // ★
+    expect(isAmbiguousWide(0x2713)).toBe(false); // ✓
   });
 
   it("does NOT treat normal ASCII letters as wide", () => {
@@ -61,6 +65,19 @@ describe("isAmbiguousWide — CJK ambiguous-width detection", () => {
   it("does NOT treat regular Latin1 letters as wide", () => {
     expect(isAmbiguousWide(0x00e9)).toBe(false); // é
     expect(isAmbiguousWide(0x00fc)).toBe(false); // ü
+  });
+
+  it("does NOT treat ° ± × ÷ as wide (let font handle Latin1)", () => {
+    expect(isAmbiguousWide(0x00b0)).toBe(false); // °
+    expect(isAmbiguousWide(0x00b1)).toBe(false); // ±
+    expect(isAmbiguousWide(0x00d7)).toBe(false); // ×
+    expect(isAmbiguousWide(0x00f7)).toBe(false); // ÷
+  });
+
+  it("treats CJK Symbols and Punctuation as wide (full-width brackets etc.)", () => {
+    expect(isAmbiguousWide(0x3000)).toBe(true); // 　 (full-width space)
+    expect(isAmbiguousWide(0x3001)).toBe(true); // 、
+    expect(isAmbiguousWide(0x300c)).toBe(true); // 「
   });
 });
 
