@@ -281,19 +281,27 @@ export default function TerminalPane({
     }
     terminal.open(termRef.current);
 
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        try {
-          fitAddon.fit();
-          wsSend({
-            type: "resize",
-            id: sessionId,
-            cols: terminal.cols,
-            rows: terminal.rows,
-          });
-        } catch {}
-      });
-    });
+    // Initial fit: retry until container has real dimensions (Grid layout
+    // may start at width=0 and expand later, causing cols=1 → vertical text).
+    const initialFit = (attempt = 0) => {
+      const container = termRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      if (rect.width < 10 || rect.height < 10) {
+        if (attempt < 20) setTimeout(() => initialFit(attempt + 1), 50);
+        return;
+      }
+      try {
+        fitAddon.fit();
+        const cols = Math.max(terminal.cols, 20);
+        const rows = Math.max(terminal.rows, 4);
+        if (cols !== terminal.cols || rows !== terminal.rows) {
+          terminal.resize(cols, rows);
+        }
+        wsSend({ type: "resize", id: sessionId, cols, rows });
+      } catch {}
+    };
+    requestAnimationFrame(() => initialFit());
 
     // Guard: when effect re-runs or cleans up, mark this instance as dead
     // so no stale closure can write to a disposed terminal

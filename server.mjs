@@ -9,6 +9,7 @@ import { execSync, spawnSync, spawn } from "child_process";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const DIST_DIR = join(__dirname, "dist");
+const SESSIONS_FILE = join(__dirname, ".sessions.json");
 const PORT = parseInt(process.env.PORT || "9100", 10);
 if (isNaN(PORT) || PORT < 1 || PORT > 65535) {
   console.error(`Invalid PORT: ${process.env.PORT}`);
@@ -69,6 +70,26 @@ const httpServer = createServer((req, res) => {
 
 const wss = new WebSocketServer({ server: httpServer });
 const sessions = new Map();
+
+// Save session metadata to disk (name, type, cwd — not PTY state)
+function saveSessionsToDisk() {
+  try {
+    const list = Array.from(sessions.values()).map((s) => ({
+      id: s.id, name: s.name, cwd: s.cwd, sessionType: s.sessionType,
+    }));
+    writeFileSync(SESSIONS_FILE, JSON.stringify(list), "utf-8");
+  } catch {}
+}
+
+// Restore sessions from disk on startup
+function restoreSessionsFromDisk() {
+  try {
+    if (!existsSync(SESSIONS_FILE)) return [];
+    const data = JSON.parse(readFileSync(SESSIONS_FILE, "utf-8"));
+    if (!Array.isArray(data)) return [];
+    return data;
+  } catch { return []; }
+}
 
 function createPtySession(shell, args, cwd, cols, rows) {
   if (pty) {
@@ -211,6 +232,7 @@ wss.on("connection", (ws) => {
           type: "session_created",
           session: { id, name, status: "running", working_dir: cwd, session_type: sessionType },
         }));
+        saveSessionsToDisk();
         break;
       }
 
@@ -249,6 +271,7 @@ wss.on("connection", (ws) => {
           // Notify all subscribers before removing
           broadcastToSubscribers(s, { type: "session_closed", id: msg.id });
           sessions.delete(msg.id);
+          saveSessionsToDisk();
         }
         break;
       }
@@ -260,6 +283,7 @@ wss.on("connection", (ws) => {
         if (s) {
           s.name = newName;
           broadcastToSubscribers(s, { type: "session_renamed", id: msg.id, name: newName });
+          saveSessionsToDisk();
         }
         break;
       }
@@ -367,11 +391,52 @@ httpServer.on("error", (err) => {
 
 httpServer.listen(PORT, () => {
   console.log(`Ibis Hub running at http://localhost:${PORT}`);
+
+  // Restore sessions from previous run
+  const saved = restoreSessionsFromDisk();
+  if (saved.length > 0) {
+    console.log(`Restoring ${saved.length} session(s) from previous run...`);
+    for (const s of saved) {
+      const cwd = s.cwd || homedir();
+      const sessionType = s.sessionType || "shell";
+      const plat = platform();
+      const userShell = plat === "win32" ? (process.env.COMSPEC || "cmd.exe") : (process.env.SHELL || "/bin/bash");
+      const args = plat === "win32" ? [] : ["-l"];
+
+      try {
+        const proc = createPtySession(userShell, args, cwd, 80, 24);
+        const session = { id: s.id, name: s.name, proc, status: "running", cwd, sessionType, subscribers: new Set(), scrollback: "" };
+        sessions.set(s.id, session);
+
+        proc.onData((data) => {
+          appendScrollback(session, data);
+          broadcastToSubscribers(session, { type: "pty_output", id: s.id, data });
+          if (data.includes("(y/n)") || data.includes("(Y/n)") || data.includes("[Y/n]") || data.includes("[y/N]")) {
+            broadcastToSubscribers(session, { type: "session_question", id: s.id });
+          }
+        });
+
+        proc.onExit(() => {
+          session.status = "exited";
+          broadcastToSubscribers(session, { type: "session_exited", id: s.id });
+        });
+
+        if (sessionType === "claude") {
+          setTimeout(() => { proc.write("claude\n"); }, 500);
+        }
+
+        console.log(`  Restored: ${s.name} (${sessionType})`);
+      } catch (e) {
+        console.error(`  Failed to restore ${s.name}: ${e.message}`);
+      }
+    }
+  }
 });
 
 // Graceful shutdown — kill all PTY processes on server exit
 function shutdown() {
-  console.log("\nShutting down — killing all sessions...");
+  console.log("\nShutting down — saving sessions and killing PTYs...");
+  saveSessionsToDisk();
   for (const [id, session] of sessions) {
     try { session.proc.kill(); } catch {}
   }
