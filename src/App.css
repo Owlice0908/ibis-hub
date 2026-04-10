@@ -76,6 +76,15 @@ html, body, #root {
   padding-right: 14px; /* prevent scrollbar from overlapping text */
   cursor: text; /* I-beam cursor over terminal area */
 }
+/* Hide xterm focus outline (Mac WebKit renders it as dotted border) */
+.xterm-helper-textarea:focus {
+  outline: none !important;
+  border: none !important;
+}
+.xterm:focus,
+.xterm *:focus {
+  outline: none !important;
+}
 /* Allow text selection inside terminal (overrides global user-select: none) */
 .xterm,
 .xterm * {
