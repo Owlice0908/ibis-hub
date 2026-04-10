@@ -12,6 +12,7 @@ jobs:
       - run: npm install
       - run: npm install playwright
       - run: npx playwright install webkit --with-deps
+      - run: npx vite build --config tests/visual/vite.config.mjs
       - run: node tests/visual/screenshot.mjs
       - uses: actions/upload-artifact@v4
         with:

@@ -1,19 +1,11 @@
 import { webkit } from 'playwright';
-import { execSync } from 'child_process';
-import { join } from 'path';
-
-const ROOT = process.cwd();
-
-// Build the test page with Vite so WebKit can load it
-console.log('Building test page with Vite...');
-execSync('npx vite build --config tests/visual/vite.config.mjs', { stdio: 'inherit', cwd: ROOT });
-
-// Serve the built files
 import { createServer } from 'http';
 import { readFileSync, existsSync } from 'fs';
-import { extname } from 'path';
+import { join, extname } from 'path';
+import { fileURLToPath } from 'url';
 
-const DIST = join(ROOT, 'tests/visual/dist');
+const __dirname = join(fileURLToPath(import.meta.url), '..');
+const DIST = join(__dirname, 'dist');
 const PORT = 9876;
 const MIME = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
@@ -39,12 +31,13 @@ server.listen(PORT, async () => {
   await page.goto(`http://localhost:${PORT}`);
   try {
     await page.waitForFunction(() => window.__TEST_DONE__ === true, { timeout: 15000 });
+    console.log('Test completed successfully');
   } catch {
-    console.log('WARNING: __TEST_DONE__ not set');
+    console.log('WARNING: __TEST_DONE__ not set, taking screenshot anyway');
   }
   await page.waitForTimeout(2000);
 
-  const screenshotPath = join(ROOT, 'tests/visual/box-drawing-result.png');
+  const screenshotPath = join(__dirname, 'box-drawing-result.png');
   await page.screenshot({ path: screenshotPath });
   console.log(`Screenshot saved: ${screenshotPath}`);
 
