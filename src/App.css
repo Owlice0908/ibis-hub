@@ -85,10 +85,6 @@ html, body, #root {
 .xterm .xterm-screen {
   cursor: text;
 }
-/* Hide xterm's hidden helper textarea focus outline (cosmetic only) */
-.xterm-helper-textarea:focus {
-  outline: none;
-}
 .xterm-viewport::-webkit-scrollbar {
   width: 6px;
 }

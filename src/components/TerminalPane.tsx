@@ -8,11 +8,8 @@ import type { ThemeMode } from "../types";
 import {
   decideKeyAction,
   decideRightClick,
-  isAmbiguousWide,
-  isForceNarrow,
   dndPositionToLogical,
 } from "../lib/terminalUtils";
-import wcwidth from "wcwidth";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const IS_MAC = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
@@ -275,39 +272,6 @@ export default function TerminalPane({
     terminal.loadAddon(unicode11Addon);
     terminal.unicode.activeVersion = "11";
 
-    // CJK-aware unicode provider. Uses the `wcwidth` npm package for base
-    // width (POSIX-standard Unicode width table) instead of xterm.js internal
-    // API, which was unreliable and caused both "dotted borders" and
-    // "overlapping characters" bugs.
-    //
-    // Priority:
-    //   1. isForceNarrow(cp) → 1  (box drawing, arrows, blocks — TUI borders)
-    //   2. isAmbiguousWide(cp) → 2  (①②③ — user's original request)
-    //   3. wcwidth(cp)  → standard POSIX width (CJK=2, ASCII=1, etc.)
-    try {
-      const safeWcwidth = (cp: number): 0 | 1 | 2 => {
-        if (isForceNarrow(cp)) return 1;
-        if (isAmbiguousWide(cp)) return 2;
-        const w = wcwidth(String.fromCodePoint(cp));
-        if (w <= 0) return (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) ? 0 : 1;
-        return (w >= 2 ? 2 : 1) as 0 | 1 | 2;
-      };
-
-      const cjkProvider = {
-        version: "cjk",
-        wcwidth: safeWcwidth,
-        charProperties: (codepoint: number, _preceding: number): number => {
-          // xterm.js v6 bit layout: bit 0 = shouldJoin, bits 1-2 = width
-          const w = safeWcwidth(codepoint);
-          return (w << 1);
-        },
-      };
-      terminal.unicode.register(cjkProvider as any);
-      terminal.unicode.activeVersion = "cjk";
-    } catch (e) {
-      console.warn("CJK unicode provider registration failed:", e);
-    }
-
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
@@ -429,7 +393,7 @@ export default function TerminalPane({
     <div
       ref={rootRef}
       data-session-id={sessionId}
-      className={`flex flex-col bg-bg min-h-0 h-full relative ${dragOver ? "ring-2 ring-accent ring-inset" : ""}`}
+      className={`flex flex-col bg-bg min-h-0 min-w-0 h-full w-full relative overflow-hidden ${dragOver ? "ring-2 ring-accent ring-inset" : ""}`}
       {...(!isTauri ? {
         onDragEnter: (e: React.DragEvent) => {
           e.preventDefault();

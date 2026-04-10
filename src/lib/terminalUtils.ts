@@ -7,48 +7,32 @@
 
 /**
  * Returns true if the Unicode codepoint is "East Asian Ambiguous" width and
- * should be rendered as 2 columns wide in CJK fonts.
- *
- * IMPORTANT: This list is intentionally narrow. Many code points that are
- * technically "East Asian Ambiguous" (box drawing, block elements,
- * geometric shapes, arrows, math operators, etc.) are heavily used by
- * TUI applications (Claude Code, vim, htop, fzf...) which expect them
- * to render as 1 column. Marking those as wide breaks TUI border
- * rendering — the borders look "dotted" because every other cell
- * becomes empty padding.
- *
- * Only ranges that TUIs essentially never use AND that visually overlap
- * with neighboring characters when treated as 1-col are included here:
- *  - Enclosed Alphanumerics (①②③⓿Ⓐ) — the original complaint
- *  - CJK Symbols and Punctuation (the wide bracket forms)
- *  - CJK Radicals Supplement
+ * should be rendered as 2 columns wide in CJK fonts. This fixes characters
+ * like ①②③, ★, ◯, box drawing, etc. visually overlapping in xterm.js.
  */
 export function isAmbiguousWide(cp: number): boolean {
   return (
     (cp >= 0x2460 && cp <= 0x24ff) || // Enclosed Alphanumerics: ①②③ ⓿ Ⓐ
-    (cp >= 0x2e80 && cp <= 0x2eff) || // CJK Radicals Supplement
-    (cp >= 0x3000 && cp <= 0x303f) // CJK Symbols and Punctuation
-  );
-}
-
-/**
- * Returns true if the codepoint MUST be rendered at 1 column even if the
- * base Unicode provider (or the font) thinks it's wide.
- *
- * TUI applications (Claude Code, vim, htop, fzf, etc.) draw borders and
- * progress bars with these characters and expect them to be exactly 1 col.
- * If the system/font treats them as 2 cols, every other cell becomes empty
- * padding and the border looks like a dotted line.
- *
- * This is the "force narrow" counterpart of isAmbiguousWide, and takes
- * priority over the base provider's width.
- */
-export function isForceNarrow(cp: number): boolean {
-  return (
-    (cp >= 0x2500 && cp <= 0x257f) || // Box Drawing: ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼
-    (cp >= 0x2580 && cp <= 0x259f) || // Block Elements: ▀ ▄ █ ░ ▒ ▓
+    (cp >= 0x2500 && cp <= 0x257f) || // Box Drawing
+    (cp >= 0x2580 && cp <= 0x259f) || // Block Elements
+    (cp >= 0x25a0 && cp <= 0x25ff) || // Geometric Shapes: ◯ ■ ▲
+    (cp >= 0x2600 && cp <= 0x26ff) || // Misc Symbols: ★ ☆ ☀
+    (cp >= 0x2700 && cp <= 0x27bf) || // Dingbats: ✓ ✗ ✚
+    (cp >= 0x2070 && cp <= 0x209f) || // Super/Subscripts
+    (cp >= 0x2150 && cp <= 0x218f) || // Number Forms: ⅓ ⅔
     (cp >= 0x2190 && cp <= 0x21ff) || // Arrows: ← → ↑ ↓
-    (cp >= 0x25a0 && cp <= 0x25ff) // Geometric Shapes: ■ ▲ ● ◯
+    (cp >= 0x2200 && cp <= 0x22ff) || // Math operators: ∀ ∃ ∈
+    (cp >= 0x2300 && cp <= 0x23ff) || // Misc technical
+    (cp >= 0x2e80 && cp <= 0x2eff) || // CJK Radicals Supplement
+    (cp >= 0x3000 && cp <= 0x303f) || // CJK Symbols and Punctuation
+    cp === 0x00a7 ||
+    cp === 0x00a8 || // § ¨
+    cp === 0x00b0 ||
+    cp === 0x00b1 || // ° ±
+    cp === 0x00b4 ||
+    cp === 0x00b6 || // ´ ¶
+    cp === 0x00d7 ||
+    cp === 0x00f7 // × ÷
   );
 }
 
