@@ -49,5 +49,11 @@ terminal.write("\r\n");
 terminal.write("────────────────────────────────────────────────────\r\n");
 terminal.write("❯ cursor here\r\n");
 terminal.write("────────────────────────────────────────────────────\r\n");
+terminal.write("\r\n");
+terminal.write("=== CJK / overlap test ===\r\n");
+terminal.write("日本語テスト abcdef 12345\r\n");
+terminal.write("①②③④⑤ テスト test\r\n");
+terminal.write("あいうえお カキクケコ ABC\r\n");
+terminal.write("混在テスト: Hello世界！foo①bar②baz\r\n");
 
 (window as any).__TEST_DONE__ = true;
