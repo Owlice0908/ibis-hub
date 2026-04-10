@@ -7,6 +7,7 @@ const terminal = new Terminal({
   fontSize: 14,
   cols: 60,
   rows: 16,
+  allowProposedApi: true,
   theme: { background: "#0f0f0f", foreground: "#e5e5e5" },
 });
 
