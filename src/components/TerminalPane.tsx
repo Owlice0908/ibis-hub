@@ -268,6 +268,37 @@ export default function TerminalPane({
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(webLinksAddon);
 
+    // Force Box Drawing and Block Element characters to width 1.
+    // Mac WebKit renders these as width 2 by default, causing Claude Code
+    // input borders to appear as dotted lines. Only these ranges are
+    // overridden — everything else uses xterm's default width.
+    try {
+      const baseProvider: any = (terminal as any)._core?._unicodeService?._activeProvider;
+      if (baseProvider) {
+        const fixedProvider = {
+          version: "fixed-box",
+          wcwidth: (cp: number): 0 | 1 | 2 => {
+            // Box Drawing + Block Elements: force width 1
+            if (cp >= 0x2500 && cp <= 0x259f) return 1;
+            return baseProvider.wcwidth(cp);
+          },
+          charProperties: (codepoint: number, preceding: number): number => {
+            if (baseProvider.charProperties) {
+              const props = baseProvider.charProperties(codepoint, preceding);
+              if (codepoint >= 0x2500 && codepoint <= 0x259f) {
+                return (props & ~0b110) | (1 << 1);
+              }
+              return props;
+            }
+            const w = (codepoint >= 0x2500 && codepoint <= 0x259f) ? 1 : baseProvider.wcwidth(codepoint);
+            return (w << 1);
+          },
+        };
+        terminal.unicode.register(fixedProvider as any);
+        terminal.unicode.activeVersion = "fixed-box";
+      }
+    } catch {}
+
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
