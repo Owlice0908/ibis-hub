@@ -5,7 +5,7 @@
   <style>
     body { background: #0f0f0f; margin: 20px; }
     #terminal { width: 600px; height: 300px; }
-    #status { color: #22c55e; font-family: monospace; margin-top: 10px; }
+    #status { color: #22c55e; font-family: monospace; margin-top: 10px; white-space: pre; }
   </style>
 </head>
 <body>
@@ -25,89 +25,60 @@
 
     terminal.open(document.getElementById('terminal'));
 
-    // Load Unicode11 addon
-    const { Unicode11Addon } = await import('/node_modules/@xterm/addon-unicode11/lib/Unicode11Addon.mjs');
-    const unicode11 = new Unicode11Addon();
-    terminal.loadAddon(unicode11);
-    terminal.unicode.activeVersion = '11';
-
-    // Register CJK provider (same code as TerminalPane.tsx)
-    const isAmbiguousWide = (cp) => {
-      return (
-        (cp >= 0x2460 && cp <= 0x24ff) ||
-        (cp >= 0x2e80 && cp <= 0x2eff) ||
-        (cp >= 0x3000 && cp <= 0x303f)
-      );
-    };
-
+    // Same fixed-box provider as TerminalPane.tsx
     try {
-      const baseProvider = terminal._core?._inputHandler?._parser?._unicodeService?._activeProvider
-        ?? terminal._core?._unicodeService?._activeProvider;
-
-      const fallbackWcwidth = (cp) => {
-        if (baseProvider && typeof baseProvider.wcwidth === 'function') {
-          return baseProvider.wcwidth(cp);
-        }
-        if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) return 0;
-        return 1;
-      };
-
-      const cjkProvider = {
-        version: 'cjk',
-        wcwidth: (cp) => isAmbiguousWide(cp) ? 2 : fallbackWcwidth(cp),
-        charProperties: (codepoint, preceding) => {
-          if (baseProvider && typeof baseProvider.charProperties === 'function') {
-            const props = baseProvider.charProperties(codepoint, preceding);
-            if (isAmbiguousWide(codepoint)) {
-              return (props & ~0b110) | (2 << 1);
+      const baseProvider = terminal._core?._unicodeService?._activeProvider;
+      if (baseProvider) {
+        const fixedProvider = {
+          version: 'fixed-box',
+          wcwidth: (cp) => {
+            if (cp >= 0x2500 && cp <= 0x259f) return 1;
+            return baseProvider.wcwidth(cp);
+          },
+          charProperties: (codepoint, preceding) => {
+            if (baseProvider.charProperties) {
+              const props = baseProvider.charProperties(codepoint, preceding);
+              if (codepoint >= 0x2500 && codepoint <= 0x259f) {
+                return (props & ~0b110) | (1 << 1);
+              }
+              return props;
             }
-            return props;
-          }
-          const width = isAmbiguousWide(codepoint) ? 2 : fallbackWcwidth(codepoint);
-          return (width << 1);
-        },
-      };
-      terminal.unicode.register(cjkProvider);
-      terminal.unicode.activeVersion = 'cjk';
-      document.getElementById('status').textContent += 'CJK provider: active\n';
+            const w = (codepoint >= 0x2500 && codepoint <= 0x259f) ? 1 : baseProvider.wcwidth(codepoint);
+            return (w << 1);
+          },
+        };
+        terminal.unicode.register(fixedProvider);
+        terminal.unicode.activeVersion = 'fixed-box';
+        document.getElementById('status').textContent += 'Provider: fixed-box active\n';
+      }
     } catch (e) {
-      document.getElementById('status').textContent += 'CJK provider: FAILED ' + e + '\n';
+      document.getElementById('status').textContent += 'Provider: FAILED ' + e + '\n';
     }
 
     // Write test content
-    terminal.write('=== Box Drawing Test (should be SOLID lines, not dotted) ===\r\n');
-    terminal.write('\r\n');
-
-    // Claude Code-style input border (same chars Claude Code uses)
+    terminal.write('=== Box Drawing Test (should be SOLID lines) ===\r\n\r\n');
     terminal.write('┌──────────────────────────────────────────────────┐\r\n');
     terminal.write('│ This is an input box (like Claude Code)         │\r\n');
     terminal.write('└──────────────────────────────────────────────────┘\r\n');
     terminal.write('\r\n');
+    terminal.write('────────────────────────────────────────────────────\r\n');
+    terminal.write('❯ cursor here\r\n');
+    terminal.write('────────────────────────────────────────────────────\r\n');
 
-    // Also test ①②③ (should be wide, no overlap)
-    terminal.write('=== Enclosed nums (should NOT overlap) ===\r\n');
-    terminal.write('①②③④⑤⑥⑦⑧⑨⑩\r\n');
-    terminal.write('\r\n');
-
-    // Width values for diagnostics
-    const testChars = [
-      { cp: 0x2500, name: '─ (box h-line)' },
-      { cp: 0x2502, name: '│ (box v-line)' },
-      { cp: 0x250c, name: '┌ (box corner)' },
-      { cp: 0x2460, name: '① (enclosed 1)' },
+    // Width diagnostics
+    const provider = terminal.unicode._activeVersion === 'fixed-box'
+      ? terminal._core?._unicodeService?._activeProvider : null;
+    const chars = [
+      { cp: 0x2500, name: '─' }, { cp: 0x2502, name: '│' },
+      { cp: 0x250c, name: '┌' }, { cp: 0x2510, name: '┐' },
     ];
-
-    let widthReport = 'Widths: ';
-    for (const { cp, name } of testChars) {
-      const w = cjkProvider?.wcwidth(cp) ?? '?';
-      widthReport += `${name}=${w}  `;
+    let report = 'Widths: ';
+    for (const { cp, name } of chars) {
+      const w = provider?.wcwidth?.(cp) ?? '?';
+      report += `${name}=${w} `;
     }
-    terminal.write(widthReport + '\r\n');
+    document.getElementById('status').textContent += report + '\n';
 
-    document.getElementById('status').textContent +=
-      'unicode.activeVersion=' + terminal.unicode.activeVersion + '\n';
-
-    // Signal to Playwright that rendering is done
     window.__TEST_DONE__ = true;
   </script>
 </body>
