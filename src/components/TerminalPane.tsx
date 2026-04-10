@@ -12,6 +12,7 @@ import {
   isForceNarrow,
   dndPositionToLogical,
 } from "../lib/terminalUtils";
+import wcwidth from "wcwidth";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const IS_MAC = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
@@ -274,54 +275,31 @@ export default function TerminalPane({
     terminal.loadAddon(unicode11Addon);
     terminal.unicode.activeVersion = "11";
 
-    // Register CJK-aware unicode provider that treats East Asian Ambiguous
-    // characters (①②③, ★, ◯, box drawing, etc.) as wide (2 columns).
-    // Without this, those characters overlap visually because xterm thinks
-    // they're 1 column wide but the font renders them as 2 columns.
+    // CJK-aware unicode provider. Uses the `wcwidth` npm package for base
+    // width (POSIX-standard Unicode width table) instead of xterm.js internal
+    // API, which was unreliable and caused both "dotted borders" and
+    // "overlapping characters" bugs.
+    //
+    // Priority:
+    //   1. isForceNarrow(cp) → 1  (box drawing, arrows, blocks — TUI borders)
+    //   2. isAmbiguousWide(cp) → 2  (①②③ — user's original request)
+    //   3. wcwidth(cp)  → standard POSIX width (CJK=2, ASCII=1, etc.)
     try {
-      const baseProvider: any = (terminal as any)._core?._inputHandler?._parser?._unicodeService?._activeProvider
-        ?? (terminal as any)._core?._unicodeService?._activeProvider;
-      const fallbackWcwidth = (cp: number): 0 | 1 | 2 => {
-        if (baseProvider && typeof baseProvider.wcwidth === "function") {
-          return baseProvider.wcwidth(cp);
-        }
-        // Minimal fallback: ASCII = 1, control = 0
-        if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) return 0;
-        return 1;
+      const safeWcwidth = (cp: number): 0 | 1 | 2 => {
+        if (isForceNarrow(cp)) return 1;
+        if (isAmbiguousWide(cp)) return 2;
+        const w = wcwidth(String.fromCodePoint(cp));
+        if (w <= 0) return (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) ? 0 : 1;
+        return (w >= 2 ? 2 : 1) as 0 | 1 | 2;
       };
-      // isAmbiguousWide is shared with src/lib/terminalUtils.ts and unit-tested
-      // Priority order for width decisions:
-      //   1. isForceNarrow → always 1 (TUI border/progress chars)
-      //   2. isAmbiguousWide → always 2 (①②③ etc.)
-      //   3. base provider → whatever Unicode11 says
+
       const cjkProvider = {
         version: "cjk",
-        wcwidth: (cp: number): 0 | 1 | 2 => {
-          if (isForceNarrow(cp)) return 1;
-          if (isAmbiguousWide(cp)) return 2;
-          return fallbackWcwidth(cp);
-        },
-        charProperties: (codepoint: number, preceding: number): number => {
-          // xterm.js v6 charProperties bit layout (verified in xterm.mjs):
-          //   bit 0    : shouldJoin (ZWJ continuation)
-          //   bits 1-2 : width (0-3)
-          //   bits 3+  : char kind / state
-          if (baseProvider && typeof baseProvider.charProperties === "function") {
-            const props = baseProvider.charProperties(codepoint, preceding);
-            if (isForceNarrow(codepoint)) {
-              // Force width=1, preserve shouldJoin and state bits
-              return (props & ~0b110) | (1 << 1);
-            }
-            if (isAmbiguousWide(codepoint)) {
-              return (props & ~0b110) | (2 << 1);
-            }
-            return props;
-          }
-          // Fallback: encode width in xterm's bit layout
-          const width = isForceNarrow(codepoint) ? 1
-            : isAmbiguousWide(codepoint) ? 2
-            : fallbackWcwidth(codepoint);
-          return (width << 1);
+        wcwidth: safeWcwidth,
+        charProperties: (codepoint: number, _preceding: number): number => {
+          // xterm.js v6 bit layout: bit 0 = shouldJoin, bits 1-2 = width
+          const w = safeWcwidth(codepoint);
+          return (w << 1);
         },
       };
       terminal.unicode.register(cjkProvider as any);

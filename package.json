@@ -24,6 +24,7 @@
     "node-pty": "1.2.0-beta.12",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "wcwidth": "^1.0.1",
     "ws": "^8.20.0"
   },
   "devDependencies": {
