@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import type { ThemeMode } from "../types";
 import {
@@ -266,11 +265,8 @@ export default function TerminalPane({
 
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
-    const unicode11Addon = new Unicode11Addon();
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(webLinksAddon);
-    terminal.loadAddon(unicode11Addon);
-    terminal.unicode.activeVersion = "11";
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
