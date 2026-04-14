@@ -229,6 +229,7 @@ export default function TerminalPane({
       );
 
       if (decision === "shift-direct") {
+        e.preventDefault();
         wsSend({ type: "write", id: sessionId, data: e.key });
         return false;
       }
