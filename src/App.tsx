@@ -54,7 +54,10 @@ function App() {
     let dragDropUnlisten: (() => void) | null = null;
 
     (async () => {
-      // Auto-update check
+      // Auto-update disabled (2026-04-14): popup appeared but updates were
+      // not actually applied. Manual DMG install is more reliable.
+      // To re-enable, uncomment the block below.
+      /*
       try {
         const { check } = await import("@tauri-apps/plugin-updater");
         const { ask } = await import("@tauri-apps/plugin-dialog");
@@ -71,6 +74,7 @@ function App() {
       } catch (e) {
         console.error("Update check failed:", e);
       }
+      */
 
       // Native drag-and-drop: Tauri provides file paths directly
       // Uses position-based targeting to find the correct session pane
