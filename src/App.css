@@ -75,6 +75,7 @@ html, body, #root {
   padding: 8px;
   padding-right: 14px; /* prevent scrollbar from overlapping text */
   cursor: text; /* I-beam cursor over terminal area */
+  overflow: hidden !important;
 }
 /* Hide xterm focus outline (Mac WebKit renders it as dotted border) */
 .xterm-helper-textarea:focus {
@@ -93,6 +94,7 @@ html, body, #root {
 }
 .xterm .xterm-screen {
   cursor: text;
+  overflow: hidden !important;
 }
 .xterm-viewport::-webkit-scrollbar {
   width: 6px;

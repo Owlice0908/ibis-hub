@@ -95,6 +95,15 @@ export default function TerminalPane({
   const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB
   const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB max buffer for hidden terminals
 
+  const safeFit = useCallback((fitAddon: FitAddon, terminal: Terminal) => {
+    const dims = fitAddon.proposeDimensions();
+    if (!dims || isNaN(dims.cols) || isNaN(dims.rows)) return null;
+    const cols = Math.max(dims.cols - 1, 20);
+    const rows = Math.max(dims.rows, 4);
+    terminal.resize(cols, rows);
+    return { cols, rows };
+  }, []);
+
   const handleResize = useCallback(() => {
     if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
     resizeTimerRef.current = setTimeout(() => {
@@ -102,21 +111,17 @@ export default function TerminalPane({
       const terminal = terminalRef.current;
       const container = termRef.current;
       if (fitAddon && terminal && container) {
-        // Skip resize when the pane is hidden offscreen (e.g. 1x1px)
         const rect = container.getBoundingClientRect();
         if (rect.width < 10 || rect.height < 10) return;
         try {
-          fitAddon.fit();
-          const cols = Math.max(terminal.cols, 20);
-          const rows = Math.max(terminal.rows, 4);
-          if (cols !== terminal.cols || rows !== terminal.rows) {
-            terminal.resize(cols, rows);
+          const result = safeFit(fitAddon, terminal);
+          if (result) {
+            wsSend({ type: "resize", id: sessionId, cols: result.cols, rows: result.rows });
           }
-          wsSend({ type: "resize", id: sessionId, cols, rows });
         } catch {}
       }
     }, 50);
-  }, [sessionId, wsSend]);
+  }, [sessionId, wsSend, safeFit]);
 
   // Upload dropped file to server, get path back, send to PTY
   const handleFileDrop = useCallback((files: FileList) => {
@@ -179,7 +184,12 @@ export default function TerminalPane({
       }
       requestAnimationFrame(() => {
         try {
-          fitAddonRef.current?.fit();
+          if (fitAddonRef.current) {
+            const result = safeFit(fitAddonRef.current, terminal);
+            if (result) {
+              wsSend({ type: "resize", id: sessionId, cols: result.cols, rows: result.rows });
+            }
+          }
         } catch {}
         terminal.scrollToBottom();
       });
@@ -293,14 +303,11 @@ export default function TerminalPane({
         return;
       }
       try {
-        fitAddon.fit();
-        const cols = Math.max(terminal.cols, 20);
-        const rows = Math.max(terminal.rows, 4);
-        if (cols !== terminal.cols || rows !== terminal.rows) {
-          terminal.resize(cols, rows);
+        const result = safeFit(fitAddon, terminal);
+        if (result) {
+          wsSend({ type: "resize", id: sessionId, cols: result.cols, rows: result.rows });
         }
-        wsSend({ type: "resize", id: sessionId, cols, rows });
-      } catch {}
+      } catch {};
     };
     requestAnimationFrame(() => initialFit());
 
@@ -382,6 +389,54 @@ export default function TerminalPane({
     // might attach a contextmenu listener on a child element.
     containerEl?.addEventListener("contextmenu", handleContextMenu, true);
 
+    // Alt(Option)+Click: move caret to clicked position by sending arrow keys.
+    // Works on Mac (Option key) and Win/Linux (Alt key) — both map to e.altKey.
+    // Rendering/font/unicode untouched — this only sends input to PTY.
+    const handleAltClick = (e: MouseEvent) => {
+      if (!alive) return;
+      if (!e.altKey) return;
+      if (e.button !== 0) return;
+      if (terminal.hasSelection()) return;
+
+      const screen = terminal.element?.querySelector(".xterm-screen") as HTMLElement | null;
+      if (!screen) return;
+      const rect = screen.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const cellWidth = rect.width / terminal.cols;
+      const cellHeight = rect.height / terminal.rows;
+      if (cellWidth <= 0 || cellHeight <= 0) return;
+
+      const targetCol = Math.max(
+        0,
+        Math.min(terminal.cols - 1, Math.floor((e.clientX - rect.left) / cellWidth)),
+      );
+      const targetRow = Math.max(
+        0,
+        Math.min(terminal.rows - 1, Math.floor((e.clientY - rect.top) / cellHeight)),
+      );
+
+      const buffer = terminal.buffer.active;
+      const cursorCol = buffer.cursorX;
+      const cursorRow = buffer.cursorY;
+
+      const colDiff = targetCol - cursorCol;
+      const rowDiff = targetRow - cursorRow;
+      if (colDiff === 0 && rowDiff === 0) return;
+
+      let seq = "";
+      if (rowDiff > 0) seq += "\x1b[B".repeat(rowDiff);
+      else if (rowDiff < 0) seq += "\x1b[A".repeat(-rowDiff);
+      if (colDiff > 0) seq += "\x1b[C".repeat(colDiff);
+      else if (colDiff < 0) seq += "\x1b[D".repeat(-colDiff);
+
+      if (seq) {
+        e.preventDefault();
+        e.stopPropagation();
+        wsSend({ type: "write", id: sessionId, data: seq });
+      }
+    };
+    containerEl?.addEventListener("click", handleAltClick);
+
     const observer = new ResizeObserver(() => handleResize());
     observer.observe(termRef.current);
 
@@ -390,6 +445,7 @@ export default function TerminalPane({
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       observer.disconnect();
       containerEl?.removeEventListener("contextmenu", handleContextMenu, true);
+      containerEl?.removeEventListener("click", handleAltClick);
       onData.dispose();
       unsubscribe();
       terminal.dispose();
