@@ -390,12 +390,15 @@ export default function TerminalPane({
     containerEl?.addEventListener("contextmenu", handleContextMenu, true);
 
     // Alt(Option)+Click: move caret to clicked position by sending arrow keys.
-    // Works on Mac (Option key) and Win/Linux (Alt key) — both map to e.altKey.
+    // Works on Mac (Option) and Win/Linux (Alt) — both map to e.altKey.
+    // Listen on document in capture phase so xterm.js internal mouse handlers
+    // (which may stopPropagation on .xterm-screen children) can't swallow it.
     // Rendering/font/unicode untouched — this only sends input to PTY.
     const handleAltClick = (e: MouseEvent) => {
       if (!alive) return;
       if (!e.altKey) return;
       if (e.button !== 0) return;
+      if (!containerEl?.contains(e.target as Node)) return;
       if (terminal.hasSelection()) return;
 
       const screen = terminal.element?.querySelector(".xterm-screen") as HTMLElement | null;
@@ -435,7 +438,7 @@ export default function TerminalPane({
         wsSend({ type: "write", id: sessionId, data: seq });
       }
     };
-    containerEl?.addEventListener("click", handleAltClick);
+    document.addEventListener("mousedown", handleAltClick, true);
 
     const observer = new ResizeObserver(() => handleResize());
     observer.observe(termRef.current);
@@ -445,7 +448,7 @@ export default function TerminalPane({
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       observer.disconnect();
       containerEl?.removeEventListener("contextmenu", handleContextMenu, true);
-      containerEl?.removeEventListener("click", handleAltClick);
+      document.removeEventListener("mousedown", handleAltClick, true);
       onData.dispose();
       unsubscribe();
       terminal.dispose();
