@@ -1,6 +1,6 @@
 import { WebSocketServer } from "ws";
 import { createServer } from "http";
-import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, readdirSync } from "fs";
 import { join, extname } from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
@@ -71,11 +71,12 @@ const httpServer = createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 const sessions = new Map();
 
-// Save session metadata to disk (name, type, cwd — not PTY state)
+// Save session metadata to disk (name, type, cwd, claudeSessionId — not PTY state)
 function saveSessionsToDisk() {
   try {
     const list = Array.from(sessions.values()).map((s) => ({
       id: s.id, name: s.name, cwd: s.cwd, sessionType: s.sessionType,
+      ...(s.claudeSessionId ? { claudeSessionId: s.claudeSessionId } : {}),
     }));
     writeFileSync(SESSIONS_FILE, JSON.stringify(list), "utf-8");
   } catch {}
@@ -89,6 +90,31 @@ function restoreSessionsFromDisk() {
     if (!Array.isArray(data)) return [];
     return data;
   } catch { return []; }
+}
+
+// Claude Code stores per-cwd conversation history at ~/.claude/projects/<encoded>/<uuid>.jsonl
+// where <encoded> is the cwd with '/' replaced by '-'.
+function encodeCwdForClaude(cwd) {
+  return cwd.replace(/\//g, "-");
+}
+
+// Find the most-recent .jsonl file in this cwd's Claude project dir.
+// `since` (epoch ms) restricts to files written after that time, so a tab can
+// pick up its OWN newly-created conversation rather than another tab's.
+function findLatestClaudeSessionId(cwd, since = 0) {
+  try {
+    const projectDir = join(homedir(), ".claude", "projects", encodeCwdForClaude(cwd));
+    if (!existsSync(projectDir)) return null;
+    const files = readdirSync(projectDir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => {
+        try { return { name: f, mtimeMs: statSync(join(projectDir, f)).mtimeMs }; }
+        catch { return null; }
+      })
+      .filter((x) => x && x.mtimeMs >= since)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return files.length > 0 ? files[0].name.replace(/\.jsonl$/, "") : null;
+  } catch { return null; }
 }
 
 function createPtySession(shell, args, cwd, cols, rows) {
@@ -203,7 +229,7 @@ wss.on("connection", (ws) => {
           break;
         }
 
-        const session = { id, name, proc, status: "running", cwd, sessionType, subscribers: new Set([ws]), scrollback: "" };
+        const session = { id, name, proc, status: "running", cwd, sessionType, claudeSessionId: null, subscribers: new Set([ws]), scrollback: "" };
         sessions.set(id, session);
 
         // PTY output: broadcast to all subscribers + save scrollback
@@ -221,11 +247,13 @@ wss.on("connection", (ws) => {
           broadcastToSubscribers(session, { type: "session_exited", id });
         });
 
-        // For claude sessions, send "claude" command after shell is ready
+        // 新規セッション → サーバ側で UUID を確定させて `claude --session-id <uuid>` で起動する。
+        // これにより、同 cwd の複数タブが衝突せず、サーバ再起動でも `--resume <uuid>` で確実に戻せる。
         if (sessionType === "claude") {
-          setTimeout(() => {
-            proc.write("claude\n");
-          }, 500);
+          const newSid = randomUUID();
+          session.claudeSessionId = newSid;
+          saveSessionsToDisk();
+          setTimeout(() => { proc.write(`claude --session-id ${newSid}\n`); }, 500);
         }
 
         ws.send(JSON.stringify({
@@ -396,6 +424,9 @@ httpServer.listen(PORT, () => {
   const saved = restoreSessionsFromDisk();
   if (saved.length > 0) {
     console.log(`Restoring ${saved.length} session(s) from previous run...`);
+    // 同 cwd 内で `claude -c` で過去継続するタブは先着1つのみ。
+    // 残りタブは衝突を避けるため新規 UUID で `--session-id` 起動する。
+    const cwdContinueClaimed = new Set();
     for (const s of saved) {
       const cwd = s.cwd || homedir();
       const sessionType = s.sessionType || "shell";
@@ -405,7 +436,7 @@ httpServer.listen(PORT, () => {
 
       try {
         const proc = createPtySession(userShell, args, cwd, 80, 24);
-        const session = { id: s.id, name: s.name, proc, status: "running", cwd, sessionType, subscribers: new Set(), scrollback: "" };
+        const session = { id: s.id, name: s.name, proc, status: "running", cwd, sessionType, claudeSessionId: s.claudeSessionId || null, subscribers: new Set(), scrollback: "" };
         sessions.set(s.id, session);
 
         proc.onData((data) => {
@@ -421,11 +452,40 @@ httpServer.listen(PORT, () => {
           broadcastToSubscribers(session, { type: "session_exited", id: s.id });
         });
 
+        let restoreMode = "none";
         if (sessionType === "claude") {
-          setTimeout(() => { proc.write("claude\n"); }, 500);
+          if (s.claudeSessionId) {
+            // 既知 session-id へ確実に復帰。
+            setTimeout(() => { proc.write(`claude --resume ${s.claudeSessionId}\n`); }, 500);
+            restoreMode = `resume ${s.claudeSessionId.slice(0,8)}`;
+          } else if (!cwdContinueClaimed.has(cwd)) {
+            // この cwd で未だ -c を使っていない先着タブ → 過去会話を継続。
+            // 起動後 session-id を捕捉して、以降の再起動では --resume で戻せるように永続化する。
+            cwdContinueClaimed.add(cwd);
+            const launchTime = Date.now();
+            setTimeout(() => { proc.write("claude -c\n"); }, 500);
+            const captureClaudeSessionId = (attempt = 0) => {
+              const sid = findLatestClaudeSessionId(cwd, launchTime);
+              if (sid) {
+                session.claudeSessionId = sid;
+                saveSessionsToDisk();
+              } else if (attempt < 40) {
+                setTimeout(() => captureClaudeSessionId(attempt + 1), 3000);
+              }
+            };
+            setTimeout(() => captureClaudeSessionId(0), 3000);
+            restoreMode = "continue (-c)";
+          } else {
+            // 同 cwd で先着タブが既に -c を取った → 衝突回避のため新規 UUID で別会話を起動。
+            const newSid = randomUUID();
+            session.claudeSessionId = newSid;
+            saveSessionsToDisk();
+            setTimeout(() => { proc.write(`claude --session-id ${newSid}\n`); }, 500);
+            restoreMode = `fresh ${newSid.slice(0,8)}`;
+          }
         }
 
-        console.log(`  Restored: ${s.name} (${sessionType})`);
+        console.log(`  Restored: ${s.name} (${sessionType}) [${restoreMode}]`);
       } catch (e) {
         console.error(`  Failed to restore ${s.name}: ${e.message}`);
       }
