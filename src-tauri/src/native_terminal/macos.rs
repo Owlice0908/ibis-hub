@@ -379,12 +379,24 @@ fn applescript_quote(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// POSIX シェルの single-quote エスケープ(コマンドインジェクション防止)。
+/// `'` を `'\''` に置換して全体を `'...'` で囲む。これにより cwd に空白/特殊文字/
+/// メタ文字(`;`、`$()`、バッククォート等)が含まれていても安全に渡せる。
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn launch_terminal_osascript(pane_id: &str, cwd: Option<&str>) -> Result<(), String> {
+    // cwd は ~ デフォルト。改行・NULL を含む値は早期 reject(AppleScript もシェルも壊れる)。
     let cwd_val = cwd.unwrap_or("~");
+    if cwd_val.contains('\n') || cwd_val.contains('\0') {
+        return Err(format!("invalid cwd (newline/NUL): {:?}", cwd_val));
+    }
     let unique_title = format!("ibis-native-{}", pane_id);
     // bash/zsh 引数も AppleScript リテラル内に入るので二重エスケープが必要。
-    // do script の引数自体が AppleScript の string なのでバックスラッシュとダブルクォート対応で十分。
-    let inner_cmd = format!("cd {} && exec zsh -lic 'claude -c'", cwd_val);
+    // ① cwd を POSIX shell の single-quote で囲む(セキュリティレビュー指摘 2026-05-28)
+    // ② do script の引数自体が AppleScript の string なのでバックスラッシュとダブルクォート対応で十分
+    let inner_cmd = format!("cd {} && exec zsh -lic 'claude -c'", shell_single_quote(cwd_val));
     // Terminal.app では window の表示タイトルは `custom title` プロパティで上書きできる。
     // `name of window 1` は read-only に近い(custom title が無ければ自動生成タイトルが返る)。
     let script = format!(

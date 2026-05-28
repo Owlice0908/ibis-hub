@@ -49,9 +49,7 @@
     "category": "DeveloperTool",
     "macOS": {
       "entitlements": "entitlements.plist",
-      "infoPlist": {
-        "NSAccessibilityUsageDescription": "Ibis Hub Preview がネイティブターミナル(Terminal.app)のウィンドウ位置とサイズをペインに重ねるためにアクセシビリティ権限を使用します。"
-      }
+      "infoPlist": "Info.plist"
     }
   }
 }

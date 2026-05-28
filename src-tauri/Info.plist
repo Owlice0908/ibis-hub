@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- ネイティブ端末オーバーレイモードで Terminal.app のウィンドウ位置・サイズを制御するために必要。
+         macOS が初回起動時にユーザーへ表示する説明文。 -->
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Ibis Hub Preview がネイティブターミナル(Terminal.app)のウィンドウ位置とサイズをペインに重ねるためにアクセシビリティ権限を使用します。</string>
+    <!-- AppleScript で Terminal.app を起動する用途 -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Ibis Hub Preview が Terminal.app を起動してネイティブ端末モードを提供します。</string>
+</dict>
+</plist>
