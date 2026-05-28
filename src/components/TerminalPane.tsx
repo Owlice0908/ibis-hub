@@ -4,12 +4,13 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
-import type { ThemeMode } from "../types";
+import type { ThemeMode, TerminalMode, PaneRect } from "../types";
 import {
   decideKeyAction,
   decideRightClick,
   dndPositionToLogical,
 } from "../lib/terminalUtils";
+import { useNativeTerminalRect } from "../hooks/useNativeTerminalRect";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const IS_MAC = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
@@ -66,6 +67,9 @@ interface TerminalPaneProps {
   showControls: boolean;
   isVisible: boolean;
   theme: ThemeMode;
+  // ペインのターミナルモード。未指定 = "xterm"(既存挙動)。
+  // "native" は Tauri Win/Mac で OS 純正端末をペイン矩形に重ねる試作モード。
+  terminalMode?: TerminalMode;
   wsSend: (msg: any) => void;
   wsOnMessage: (handler: (msg: any) => void) => () => void;
   onDetach: () => void;
@@ -78,6 +82,7 @@ export default function TerminalPane({
   showControls,
   isVisible,
   theme,
+  terminalMode = "xterm",
   wsSend,
   wsOnMessage,
   onDetach,
@@ -205,6 +210,8 @@ export default function TerminalPane({
 
   useEffect(() => {
     if (!termRef.current) return;
+    // Native モード時は xterm.js を初期化しない(ペイン枠の中身は Rust が wt.exe / Terminal.app を重ねる)
+    if (terminalMode === "native") return;
 
     const terminal = new Terminal({
       theme: theme === "dark" ? DARK_THEME : LIGHT_THEME,
@@ -455,7 +462,54 @@ export default function TerminalPane({
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [sessionId, handleResize, wsSend, wsOnMessage]);
+  }, [sessionId, handleResize, wsSend, wsOnMessage, terminalMode]);
+
+  // ────────────────────────────────────────────────────────────────
+  // ネイティブ端末オーバーレイ(Preview): Tauri Win/Mac でのみ動作。
+  // Rust 側で wt.exe / Terminal.app を起動し、ペイン矩形に常時最前面で重ねる。
+  // ────────────────────────────────────────────────────────────────
+  const isNativeMode = terminalMode === "native";
+
+  // 矩形変化通知(active=true の時のみ ResizeObserver 等を張る)
+  const onRectChange = useCallback(
+    (paneId: string, rect: PaneRect) => {
+      wsSend({ type: "update_native_terminal_rect", paneId, rect });
+    },
+    [wsSend],
+  );
+  useNativeTerminalRect({
+    paneRef: rootRef,
+    paneId: sessionId,
+    active: isNativeMode && isTauri && isVisible,
+    onRectChange,
+  });
+
+  // 可視状態の切替(タブ切替・detach 時にネイティブ端末も hide/show)
+  useEffect(() => {
+    if (!isNativeMode || !isTauri) return;
+    wsSend({ type: "set_native_terminal_visible", paneId: sessionId, visible: isVisible });
+  }, [isNativeMode, isVisible, sessionId, wsSend]);
+
+  // 起動・終了(マウント時に spawn、アンマウント時に close)
+  useEffect(() => {
+    if (!isNativeMode || !isTauri) return;
+    const root = rootRef.current;
+    if (!root) return;
+    const r = root.getBoundingClientRect();
+    const initialRect: PaneRect = {
+      x: r.left,
+      y: r.top,
+      width: r.width,
+      height: r.height,
+      scaleFactor: window.devicePixelRatio || 1,
+    };
+    wsSend({ type: "spawn_native_terminal", paneId: sessionId, cwd: null, rect: initialRect });
+    return () => {
+      wsSend({ type: "close_native_terminal", paneId: sessionId });
+    };
+    // sessionId と isNativeMode が変わったら spawn/close をやり直す
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNativeMode, sessionId]);
 
   return (
     <div
@@ -523,7 +577,26 @@ export default function TerminalPane({
           )}
         </div>
       </div>
-      <div ref={termRef} className="flex-1 min-h-0 min-w-0 overflow-hidden" />
+      {/* xterm モード: xterm.js の DOM。Native モードでは中身を空のまま
+          (Rust が wt.exe / Terminal.app を重ねるので透過させる) */}
+      {terminalMode === "xterm" ? (
+        <div ref={termRef} className="flex-1 min-h-0 min-w-0 overflow-hidden" />
+      ) : (
+        <div
+          ref={termRef}
+          className="flex-1 min-h-0 min-w-0 overflow-hidden flex items-center justify-center text-text-muted text-xs select-none"
+          // ネイティブ端末がオーバーレイされるまでの空き枠(Preview バッジ表示)
+        >
+          <div className="text-center">
+            <div className="text-accent text-xs mb-1">⚡ Native Terminal (Preview)</div>
+            <div className="text-text-muted text-[10px]">
+              {isTauri
+                ? "OS 純正ターミナルをこの枠に重ねます…"
+                : "このモードは Tauri デスクトップ版のみ対応"}
+            </div>
+          </div>
+        </div>
+      )}
       {dragOver && (
         <div className="absolute inset-0 bg-accent/10 flex items-center justify-center pointer-events-none z-10">
           <div className="bg-surface border border-accent rounded-lg px-6 py-3 text-text font-medium shadow-lg pointer-events-none">

@@ -14,6 +14,11 @@ interface TerminalGridProps {
   onCloseSession: (id: string) => void;
 }
 
+// 既存セッションは terminalMode 未設定 = "xterm" として扱う(後方互換)
+function modeOf(session: Session | undefined): "xterm" | "native" {
+  return session?.terminalMode === "native" ? "native" : "xterm";
+}
+
 export default function TerminalGrid({
   sessions,
   allSessionIds: rawAllSessionIds,
@@ -44,6 +49,7 @@ export default function TerminalGrid({
             key={focusedId}
             sessionId={focusedId}
             sessionName={mainSession?.name || "Session"}
+            terminalMode={modeOf(mainSession)}
             showControls={false}
             isVisible={true}
             theme={theme}
@@ -62,6 +68,7 @@ export default function TerminalGrid({
                 <TerminalPane
                   sessionId={id}
                   sessionName={session?.name || "Session"}
+                  terminalMode={modeOf(session)}
                   showControls={true}
                   isVisible={true}
                   theme={theme}
@@ -82,6 +89,7 @@ export default function TerminalGrid({
               <TerminalPane
                 sessionId={id}
                 sessionName={session?.name || "Session"}
+                terminalMode={modeOf(session)}
                 showControls={false}
                 isVisible={false}
                 theme={theme}
@@ -132,6 +140,7 @@ export default function TerminalGrid({
             <TerminalPane
               sessionId={id}
               sessionName={session?.name || "Session"}
+              terminalMode={modeOf(session)}
               showControls={visibleCount > 1}
               isVisible={isVisible}
               theme={theme}

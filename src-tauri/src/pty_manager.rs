@@ -15,6 +15,10 @@ pub struct SessionInfo {
     pub status: String,
     pub working_dir: String,
     pub session_type: String,
+    // "xterm"|"native". 既存セッションは未指定 = "xterm" として扱う(後方互換)。
+    // Native モードでは PTY を起動せず、Rust 側で wt.exe / Terminal.app を spawn してオーバーレイする。
+    #[serde(rename = "terminalMode", skip_serializing_if = "Option::is_none", default)]
+    pub terminal_mode: Option<String>,
 }
 
 struct Session {
@@ -115,6 +119,7 @@ impl PtyManager {
             status: "running".to_string(),
             working_dir: cwd,
             session_type,
+            terminal_mode: Some("xterm".to_string()),
         };
 
         // Get reader and writer up front
@@ -146,6 +151,33 @@ impl PtyManager {
         };
 
         self.sessions.lock().insert(id, session);
+        Ok(info)
+    }
+
+    /// Native モード用: PTY を起動せずに SessionInfo だけを作って返す。
+    /// 実体のターミナルは Rust 側で wt.exe / Terminal.app を spawn してオーバーレイする
+    /// (native_terminal モジュールが担当)。本メソッドはセッション ID 発行とメタデータ作成のみ。
+    pub fn create_session_metadata_only(
+        &self,
+        name: String,
+        working_dir: Option<String>,
+        session_type: String,
+    ) -> Result<SessionInfo, String> {
+        let cwd = working_dir.unwrap_or_else(|| {
+            std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
+        });
+        let id = Uuid::new_v4().to_string();
+        let info = SessionInfo {
+            id,
+            name,
+            status: "running".to_string(),
+            working_dir: cwd,
+            session_type,
+            terminal_mode: Some("native".to_string()),
+        };
+        // Note: PTY を持たないため self.sessions には登録しない。
+        // 結果として write_to_session / resize_session / close_session が
+        // 「session not found」を返すが、Native モードでは Frontend がそれらを呼ばない設計。
         Ok(info)
     }
 

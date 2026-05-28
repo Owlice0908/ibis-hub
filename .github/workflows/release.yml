@@ -255,6 +255,9 @@ jobs:
   # CI so we get a guarantee that auto-update will work — without needing
   # any Mac user to test it.
   verify-updater-chain:
+    # Preview ビルド(v*-preview タグ)では auto-publish しない。Draft のまま残し、
+    # オーナー(=nakamura さん)だけが GitHub Releases > Drafts から DL できるようにする。
+    if: ${{ !contains(github.ref_name, '-preview') }}
     needs: assemble-latest-json
     runs-on: ubuntu-22.04
     permissions:

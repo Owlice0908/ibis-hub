@@ -71,12 +71,14 @@ const httpServer = createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 const sessions = new Map();
 
-// Save session metadata to disk (name, type, cwd, claudeSessionId — not PTY state)
+// Save session metadata to disk (name, type, cwd, claudeSessionId, terminalMode — not PTY state)
+// terminalMode is optional ("xterm"|"native"). Browser version always treats it as "xterm".
 function saveSessionsToDisk() {
   try {
     const list = Array.from(sessions.values()).map((s) => ({
       id: s.id, name: s.name, cwd: s.cwd, sessionType: s.sessionType,
       ...(s.claudeSessionId ? { claudeSessionId: s.claudeSessionId } : {}),
+      ...(s.terminalMode && s.terminalMode !== "xterm" ? { terminalMode: s.terminalMode } : {}),
     }));
     writeFileSync(SESSIONS_FILE, JSON.stringify(list), "utf-8");
   } catch {}
@@ -214,6 +216,10 @@ wss.on("connection", (ws) => {
         const name = (msg.name || `Session ${sessions.size + 1}`).slice(0, 256);
         const cwd = msg.working_dir || homedir();
         const sessionType = msg.session_type || "claude";
+        // terminalMode: "xterm"|"native". Browser (this server) always runs xterm regardless of request.
+        // We persist the requested value so a future Tauri session pickup can honor it.
+        const requestedMode = msg.terminalMode === "native" ? "native" : "xterm";
+        const terminalMode = "xterm"; // browser cannot host native overlay; effective mode is always xterm here
 
         const plat = platform();
         const userShell = plat === "win32" ? (process.env.COMSPEC || "cmd.exe") : (process.env.SHELL || "/bin/bash");
@@ -229,7 +235,7 @@ wss.on("connection", (ws) => {
           break;
         }
 
-        const session = { id, name, proc, status: "running", cwd, sessionType, claudeSessionId: null, subscribers: new Set([ws]), scrollback: "" };
+        const session = { id, name, proc, status: "running", cwd, sessionType, claudeSessionId: null, subscribers: new Set([ws]), scrollback: "", terminalMode, requestedMode };
         sessions.set(id, session);
 
         // PTY output: broadcast to all subscribers + save scrollback
@@ -258,7 +264,7 @@ wss.on("connection", (ws) => {
 
         ws.send(JSON.stringify({
           type: "session_created",
-          session: { id, name, status: "running", working_dir: cwd, session_type: sessionType },
+          session: { id, name, status: "running", working_dir: cwd, session_type: sessionType, terminalMode, requestedMode },
         }));
         saveSessionsToDisk();
         break;

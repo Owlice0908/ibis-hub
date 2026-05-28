@@ -52,7 +52,39 @@ export function useTauriTransport() {
     }
   }
 
-  // Cleanup all listeners on unmount
+  // Global (non-session-scoped) Tauri listeners.
+  // - native-terminal-exited: ユーザーが wt.exe / Terminal.app を直接閉じた時の通知
+  // - native-terminal-error : Rust 側で異常検知時の通知
+  useEffect(() => {
+    let unlistenExited: UnlistenFn | null = null;
+    let unlistenError: UnlistenFn | null = null;
+    (async () => {
+      const emit = emitRef.current;
+      try {
+        unlistenExited = await listen<string>("native-terminal-exited", (event) => {
+          emit({ type: "native_terminal_exited", paneId: event.payload });
+        });
+      } catch {}
+      try {
+        unlistenError = await listen<{ paneId: string; error: string }>(
+          "native-terminal-error",
+          (event) => {
+            emit({
+              type: "native_terminal_error",
+              paneId: event.payload?.paneId,
+              error: event.payload?.error || "unknown",
+            });
+          },
+        );
+      } catch {}
+    })();
+    return () => {
+      try { unlistenExited && unlistenExited(); } catch {}
+      try { unlistenError && unlistenError(); } catch {}
+    };
+  }, []);
+
+  // Cleanup all session listeners on unmount
   useEffect(() => {
     return () => {
       for (const unlisten of listenersRef.current.values()) {
@@ -67,15 +99,68 @@ export function useTauriTransport() {
     try {
       switch (msg.type) {
         case "create_session": {
+          const requestedMode = msg.terminalMode === "native" ? "native" : "xterm";
           const session = await invoke<any>("create_session", {
             name: msg.name,
             workingDir: msg.working_dir || null,
             sessionType: msg.session_type || "claude",
+            terminalMode: requestedMode,
           });
           await attachSessionListeners(session.id);
-          emit({ type: "session_created", session });
+          // Tauri Rust 側が session.terminalMode を確定値で返す前提。未対応版でも requestedMode を保険で乗せる
+          emit({ type: "session_created", session: { ...session, terminalMode: session.terminalMode || requestedMode, requestedMode } });
           break;
         }
+
+        // ── ネイティブ端末オーバーレイ(Preview) ───────────────────────
+        // Tauri Win/Mac 限定。失敗時は呼び出し側で xterm モードにフォールバック。
+        case "spawn_native_terminal": {
+          try {
+            await invoke("spawn_native_terminal", {
+              paneId: msg.paneId,
+              cwd: msg.cwd ?? null,
+              rect: msg.rect,
+            });
+            emit({ type: "native_terminal_spawned", paneId: msg.paneId });
+          } catch (e: any) {
+            emit({
+              type: "native_terminal_error",
+              paneId: msg.paneId,
+              error: e?.toString() || "spawn failed",
+            });
+          }
+          break;
+        }
+
+        case "update_native_terminal_rect": {
+          // 高頻度。失敗は無視(座標差分が次に同期される)
+          try {
+            await invoke("update_native_terminal_rect", {
+              paneId: msg.paneId,
+              rect: msg.rect,
+            });
+          } catch {}
+          break;
+        }
+
+        case "close_native_terminal": {
+          try {
+            await invoke("close_native_terminal", { paneId: msg.paneId });
+          } catch {}
+          emit({ type: "native_terminal_closed", paneId: msg.paneId });
+          break;
+        }
+
+        case "set_native_terminal_visible": {
+          try {
+            await invoke("set_native_terminal_visible", {
+              paneId: msg.paneId,
+              visible: !!msg.visible,
+            });
+          } catch {}
+          break;
+        }
+        // ─────────────────────────────────────────────────────────
 
         case "attach_session": {
           await attachSessionListeners(msg.id);

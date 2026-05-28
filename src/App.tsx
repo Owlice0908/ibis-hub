@@ -7,7 +7,13 @@ import TerminalGrid from "./components/TerminalGrid";
 import { useWS } from "./useWebSocket";
 import { useTauriTransport } from "./useTauriTransport";
 import { findDropTargetSession, pathsToShellArgs } from "./lib/terminalUtils";
-import type { Session, LayoutMode, ThemeMode } from "./types";
+import {
+  detectInitialPlatform,
+  refinePlatformFromTauri,
+  isNativeTerminalAvailable,
+  resolveTerminalMode,
+} from "./lib/environmentUtils";
+import type { Session, LayoutMode, ThemeMode, TerminalMode, PlatformInfo } from "./types";
 
 // Detect Tauri at module level (constant, safe for hooks)
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -36,8 +42,25 @@ function App() {
     (localStorage.getItem("ibis-theme") as ThemeMode) || "dark"
   );
   const [showSplash, setShowSplash] = useState(true);
+  // 環境判定: 起動時は navigator ベース、Tauri なら get_platform() で確定
+  const [platformInfo, setPlatformInfo] = useState<PlatformInfo>(() => detectInitialPlatform());
+  const nativeAvailable = isNativeTerminalAvailable(platformInfo);
   const sessionCountRef = useRef(0);
   const focusedSessionIdRef = useRef<string | null>(null);
+
+  // Tauri 経由で正確な OS を取得して platformInfo を確定する
+  useEffect(() => {
+    if (!isTauri) return;
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const plat = await invoke<string>("get_platform");
+        setPlatformInfo((prev) => refinePlatformFromTauri(prev, plat));
+      } catch (e) {
+        console.error("get_platform failed:", e);
+      }
+    })();
+  }, []);
 
   // Keep ref in sync for use in message handler (avoids stale closure)
   focusedSessionIdRef.current = focusedSessionId;
@@ -173,18 +196,42 @@ function App() {
             }
           }
           break;
-        case "session_created":
+        case "session_created": {
+          // 受信モードを環境で解決(ブラウザ版で "native" が来ても xterm に降格)
+          const { mode: effectiveMode } = resolveTerminalMode(
+            msg.session.terminalMode,
+            platformInfo,
+          );
+          const sessionWithMode: Session = { ...msg.session, terminalMode: effectiveMode };
           // Deduplicate: don't add if session already exists
           setSessions((prev) => {
-            if (prev.some((s) => s.id === msg.session.id)) return prev;
-            return [...prev, msg.session];
+            if (prev.some((s) => s.id === sessionWithMode.id)) return prev;
+            return [...prev, sessionWithMode];
           });
           setActiveSessionIds((prev) => {
-            if (prev.includes(msg.session.id)) return prev;
-            return [...prev, msg.session.id];
+            if (prev.includes(sessionWithMode.id)) return prev;
+            return [...prev, sessionWithMode.id];
           });
-          setFocusedSessionId(msg.session.id);
+          setFocusedSessionId(sessionWithMode.id);
           break;
+        }
+        case "native_terminal_error": {
+          // ネイティブ起動に失敗。該当セッションを xterm モードに降格
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === msg.paneId ? { ...s, terminalMode: "xterm" as TerminalMode } : s,
+            ),
+          );
+          console.warn(`Native terminal failed for ${msg.paneId}: ${msg.error}. Fell back to xterm.`);
+          break;
+        }
+        case "native_terminal_exited": {
+          // ユーザーが wt/Terminal.app を直接閉じた → セッション自体も閉じる
+          setSessions((prev) => prev.filter((s) => s.id !== msg.paneId));
+          setActiveSessionIds((prev) => prev.filter((sid) => sid !== msg.paneId));
+          setFocusedSessionId((prev) => (prev === msg.paneId ? null : prev));
+          break;
+        }
         case "session_question":
           setQuestionSessions((prev) => {
             const next = new Set(prev);
@@ -230,14 +277,22 @@ function App() {
     });
   }, [onMessage, send]);
 
-  const createSession = useCallback((type: "claude" | "shell" = "claude") => {
-    sessionCountRef.current += 1;
-    send({
-      type: "create_session",
-      name: type === "claude" ? `Claude ${sessionCountRef.current}` : `Terminal ${sessionCountRef.current}`,
-      session_type: type,
-    });
-  }, [send]);
+  const createSession = useCallback(
+    (type: "claude" | "shell" = "claude", terminalMode: TerminalMode = "xterm") => {
+      sessionCountRef.current += 1;
+      const baseName =
+        type === "claude" ? `Claude ${sessionCountRef.current}` : `Terminal ${sessionCountRef.current}`;
+      // Native モードはサフィックスで識別しやすくする(試作期間中のみ)
+      const name = terminalMode === "native" ? `${baseName} ⚡` : baseName;
+      send({
+        type: "create_session",
+        name,
+        session_type: type,
+        terminalMode,
+      });
+    },
+    [send],
+  );
 
   const closeSession = useCallback((id: string) => {
     send({ type: "close_session", id });
@@ -282,6 +337,7 @@ function App() {
         layout={layout}
         theme={theme}
         questionSessionIds={Array.from(questionSessions)}
+        nativeAvailable={nativeAvailable}
         onLayoutChange={setLayout}
         onThemeChange={setTheme}
         onCreateSession={createSession}

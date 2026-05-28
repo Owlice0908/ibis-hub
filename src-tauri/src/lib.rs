@@ -1,6 +1,15 @@
 mod pty_manager;
+mod native_terminal;
 
 use pty_manager::{PtyManager, SessionInfo};
+use native_terminal::manager::{
+    NativeTerminalManager,
+    spawn_native_terminal,
+    update_native_terminal_rect,
+    close_native_terminal,
+    set_native_terminal_visible,
+    native_terminal_available,
+};
 use std::sync::Arc;
 use std::io::Write;
 use tauri::{Manager, State};
@@ -8,7 +17,7 @@ use tauri::{Manager, State};
 type PtyState = Arc<PtyManager>;
 
 /// Write a log message to ~/ibis-hub.log
-fn log(msg: &str) {
+pub(crate) fn log(msg: &str) {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| "/tmp".to_string());
@@ -44,15 +53,30 @@ fn create_session(
     name: String,
     working_dir: Option<String>,
     session_type: Option<String>,
+    terminal_mode: Option<String>,
 ) -> Result<SessionInfo, String> {
     let stype = session_type.unwrap_or_else(|| "shell".to_string());
-    log(&format!("create_session: name={}, type={}, cwd={:?}", name, stype, working_dir));
-    let result = state.create_session(name, working_dir, stype);
+    let mode = terminal_mode.unwrap_or_else(|| "xterm".to_string());
+    log(&format!(
+        "create_session: name={}, type={}, mode={}, cwd={:?}",
+        name, stype, mode, working_dir
+    ));
+    // Native モード時は PTY を起動しない(Rust 側でターミナルアプリを spawn してオーバーレイする)。
+    // ただし SessionInfo は同じ形で返し、Frontend は xterm モードと同じセッション管理ができるようにする。
+    let result = if mode == "native" {
+        state.create_session_metadata_only(name, working_dir, stype)
+    } else {
+        state.create_session(name, working_dir, stype)
+    };
     match &result {
-        Ok(info) => log(&format!("create_session OK: id={}", info.id)),
+        Ok(info) => log(&format!("create_session OK: id={}, mode={}", info.id, mode)),
         Err(e) => log(&format!("create_session ERROR: {}", e)),
     }
-    result
+    // SessionInfo に terminalMode を載せて返す(SessionInfo の Serialize でフィールド追加済み前提)
+    result.map(|mut info| {
+        info.terminal_mode = Some(mode);
+        info
+    })
 }
 
 #[tauri::command]
@@ -342,6 +366,37 @@ pub fn run() {
             let pty_manager = Arc::new(PtyManager::new(app.handle().clone()));
             app.manage(pty_manager);
 
+            // ネイティブ端末オーバーレイ(Preview): プラットフォーム別 backend を 1 つ生成して manage する
+            // backend 側が AppHandle 経由で emit するため、モジュールスコープに AppHandle をセットする
+            #[cfg(target_os = "macos")]
+            {
+                native_terminal::macos::set_app_handle(app.handle().clone());
+            }
+            #[cfg(target_os = "windows")]
+            {
+                native_terminal::windows::set_app_handle(app.handle().clone());
+            }
+            let native_backend = native_terminal::create_backend();
+            log(&format!(
+                "native_terminal backend available={}, permission={:?}",
+                native_backend.is_available(),
+                native_backend.permission_status(),
+            ));
+            app.manage(NativeTerminalManager::new(native_backend));
+
+            // アプリ終了時に全ネイティブ端末を後始末する
+            let app_handle = app.handle().clone();
+            app.handle().clone().on_window_event(
+                "main", // メインウィンドウのラベル
+                move |event| {
+                    if let tauri::WindowEvent::CloseRequested { .. } = event {
+                        if let Some(mgr) = app_handle.try_state::<NativeTerminalManager>() {
+                            mgr.backend.close_all();
+                        }
+                    }
+                },
+            );
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -359,6 +414,12 @@ pub fn run() {
             pick_files_wsl,
             toggle_ime,
             get_ime_state,
+            // Native terminal overlay (Preview)
+            spawn_native_terminal,
+            update_native_terminal_rect,
+            close_native_terminal,
+            set_native_terminal_visible,
+            native_terminal_available,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
