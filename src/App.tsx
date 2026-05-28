@@ -27,10 +27,6 @@ const WS_URL = window.location.port === "1420"
   : `ws://${window.location.host}`;
 
 // Transport hook selected once at module load (safe: isTauri never changes)
-// preview.9 で Tauri Win も useTauriTransport に戻す(本筋復帰):
-//   - pty_manager.rs に WSLENV + --cd ~ + bash -l -c 修正を入れた
-//   - portable-pty を 0.8.1 にダウングレード(0.9 の Windows 読み出し回帰回避)
-//   - これで wsl 経由の claude が portable-pty / ConPTY で動く想定
 const useTransport = isTauri
   ? () => useTauriTransport()
   : () => useWS(WS_URL);
@@ -286,11 +282,11 @@ function App() {
       sessionCountRef.current += 1;
       const baseName =
         type === "claude" ? `Claude ${sessionCountRef.current}` : `Terminal ${sessionCountRef.current}`;
-      // 全環境で xterm モードがデフォルト。
-      // Tauri Win では pty_manager.rs が wsl.exe を spawn してブラウザ版と同等の挙動を実現する。
-      // Native overlay モード(wt.exe を重ねる方式)は試作コードとして残しているが、
-      // デフォルトでは使用しない(明示的に terminalMode="native" を渡した場合のみ)。
-      const effectiveMode: TerminalMode = terminalMode ?? "xterm";
+      // モード自動決定(preview.10):
+      // - Tauri デスクトップ(Win/Mac) → native(wt.exe / Terminal.app をペインにオーバーレイ)
+      // - ブラウザ版                    → xterm(従来通り)
+      // C 案で HWND 取得をタイトル一致に修正したので、wt.exe オーバーレイが動く想定。
+      const effectiveMode: TerminalMode = terminalMode ?? (nativeAvailable ? "native" : "xterm");
       send({
         type: "create_session",
         name: baseName,
@@ -298,7 +294,7 @@ function App() {
         terminalMode: effectiveMode,
       });
     },
-    [send],
+    [send, nativeAvailable],
   );
 
   const closeSession = useCallback((id: string) => {

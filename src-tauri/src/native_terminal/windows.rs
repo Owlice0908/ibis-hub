@@ -35,7 +35,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::Threading::TerminateProcess;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible,
+    EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowTextW, IsWindowVisible,
     PostMessageW, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_TOP,
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
     SW_HIDE, SW_SHOWNOACTIVATE, WM_CLOSE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW,
@@ -48,8 +48,11 @@ use super::watcher::watch_child_exit;
 const CASCADIA_HOSTING_WINDOW_CLASS: &str = "CASCADIA_HOSTING_WINDOW_CLASS";
 
 // HWND 探索の上限(50ms × 60 = 3 秒)。
-const HWND_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const HWND_POLL_MAX_ATTEMPTS: u32 = 60;
+// wt.exe は AppX 初回起動 + WSL distribution 起動で 2〜5 秒掛かることがある。
+// preview.6 までは 3 秒(50ms × 60)だったが、HWND を取り損ねていた。
+// agent 2 (2026-05-28) 結論に従い 10 秒(100ms × 100)に延長。
+const HWND_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const HWND_POLL_MAX_ATTEMPTS: u32 = 100;
 
 // Tauri AppHandle 注入用。setup() からセットされる前に spawn が呼ばれた場合は emit を諦める。
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
@@ -112,21 +115,21 @@ impl Default for WindowsBackend {
 }
 
 // ─── EnumWindows 用のパラメータ受け渡し ──────────────────────────────────────
+//
+// HWND 探索の方針(2026-05-28 agent 2 結論):
+// - 当初は PID 一致で探していたが、wt.exe は 0 バイト stub で即終了し、
+//   本体は別 PID の WindowsTerminal.exe として再起動される。よって PID 一致では
+//   永遠に HWND を取得できない仕様だった。
+// - 代わりに **ウィンドウタイトル一致**で探索する。spawn 時に `--title ibis-native-<uuid>`
+//   を付けているので、CASCADIA_HOSTING_WINDOW_CLASS + タイトル一致で一意に特定可能。
 
 struct EnumCtx {
-    target_pid: u32,
-    found_hwnd: isize, // 0 == not found yet
+    target_title: Vec<u16>, // UTF-16 表現で比較するため事前変換
+    found_hwnd: isize,      // 0 == not found yet
 }
 
 unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let ctx = &mut *(lparam.0 as *mut EnumCtx);
-
-    // 自プロセスではなく wt.exe のプロセス由来か?
-    let mut pid: u32 = 0;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    if pid != ctx.target_pid {
-        return BOOL(1); // continue
-    }
 
     // 可視ウィンドウのみ対象(wt.exe は内部に不可視ウィンドウも作る)。
     if !IsWindowVisible(hwnd).as_bool() {
@@ -134,25 +137,37 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     }
 
     // クラス名が CASCADIA_HOSTING_WINDOW_CLASS か?
-    let mut buf = [0u16; 256];
-    let len = GetClassNameW(hwnd, &mut buf);
-    if len <= 0 {
+    let mut class_buf = [0u16; 256];
+    let class_len = GetClassNameW(hwnd, &mut class_buf);
+    if class_len <= 0 {
         return BOOL(1);
     }
-    let class_name = String::from_utf16_lossy(&buf[..len as usize]);
-    if class_name == CASCADIA_HOSTING_WINDOW_CLASS {
+    let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
+    if class_name != CASCADIA_HOSTING_WINDOW_CLASS {
+        return BOOL(1);
+    }
+
+    // タイトル一致チェック(target_title が含まれるか部分一致で判定)
+    let mut title_buf = [0u16; 512];
+    let title_len = GetWindowTextW(hwnd, &mut title_buf);
+    if title_len <= 0 {
+        return BOOL(1);
+    }
+    let title = String::from_utf16_lossy(&title_buf[..title_len as usize]);
+    let target = String::from_utf16_lossy(&ctx.target_title);
+    if title.contains(&target) {
         ctx.found_hwnd = hwnd.0 as isize;
         return BOOL(0); // 終了
     }
     BOOL(1)
 }
 
-/// 指定 PID 配下で CASCADIA_HOSTING_WINDOW_CLASS の HWND を 1 つ返す。
+/// 指定タイトル文字列を含む CASCADIA_HOSTING_WINDOW_CLASS の HWND を 1 つ返す。
 /// 見つからなければ 0 を返す。
-fn find_hwnd_for_pid(pid: u32) -> isize {
-    let mut ctx = EnumCtx { target_pid: pid, found_hwnd: 0 };
+fn find_hwnd_by_title(title: &str) -> isize {
+    let target_title: Vec<u16> = title.encode_utf16().collect();
+    let mut ctx = EnumCtx { target_title, found_hwnd: 0 };
     let lparam = LPARAM(&mut ctx as *mut _ as isize);
-    // EnumWindows は found 時に enum_proc から 0 を返してもエラー扱いされる場合がある(無視で良い)。
     let _ = unsafe { EnumWindows(Some(enum_proc), lparam) };
     ctx.found_hwnd
 }
@@ -228,11 +243,13 @@ impl NativeTerminalBackend for WindowsBackend {
             )));
         }
 
-        // cwd: None なら cd 自体を省略(WSL の HOME に入る)。
-        //      指定があれば POSIX single-quote で囲って bash に渡す(空白・特殊文字対策)。
-        // preview.5 までは cwd None 時に "~" を入れていたが、bash で `cd '~'` だと
-        // single-quote が tilde 展開を抑制して `cd: ~: No such file or directory` で死ぬ。
-        let bash_cmd = match &opts.cwd {
+        // wsl.exe コマンド構築:
+        // - cwd None なら Linux 側 HOME(~)に入る
+        // - cwd 指定があれば --cd で Linux パスとして明示
+        // - bash -l -c で login shell + コマンド実行(-i は -c と非互換なので外す)
+        // - WSLENV は wt.exe 経由なので親プロセス側で設定できない代わりに、
+        //   wsl.exe の引数で `--exec` を使うパターンも検討したが互換性に難があるため -l に依存
+        let inner_cmd = match &opts.cwd {
             Some(c) if !c.is_empty() => {
                 let escaped = c.replace('\'', "'\\''");
                 format!("cd '{}' && exec claude -c", escaped)
@@ -242,11 +259,8 @@ impl NativeTerminalBackend for WindowsBackend {
 
         // wt.exe を起動。タイトルに pane_id を埋め込んで EnumWindows 探索のヒントにする。
         // -w new   : 新ウィンドウ(既存 wt にタブ追加されると HWND を共有されて埋め込み破綻)
-        // --title  : 識別用タイトル
-        // -p の Profile 指定はユーザー環境依存(Ubuntu プロファイルが無い PC で失敗するので外す)。
-        //            wt.exe デフォルトプロファイルで動かす。
-        // wsl.exe を直接呼ぶ: `wsl.exe -d Ubuntu -- bash -lic "..."`
-        // -lic で login + interactive にして ~/.bashrc / ~/.profile を読み込ませ PATH 解決を確実化。
+        // --title  : 識別用タイトル(これでタイトル一致 HWND 探索が可能)
+        // wsl.exe --cd ~ -- bash -l -c "..."
         let title = format!("ibis-native-{}", pane_id);
 
         crate::log(&format!(
@@ -262,10 +276,13 @@ impl NativeTerminalBackend for WindowsBackend {
             .arg("wsl.exe")
             .arg("-d")
             .arg("Ubuntu")
+            .arg("--cd")
+            .arg("~")
             .arg("--")
             .arg("bash")
-            .arg("-lic")
-            .arg(&bash_cmd)
+            .arg("-l")
+            .arg("-c")
+            .arg(&inner_cmd)
             .spawn()
         {
             Ok(c) => c,
@@ -294,11 +311,13 @@ impl NativeTerminalBackend for WindowsBackend {
         let pane_id_for_thread = pane_id.clone();
         let rect = opts.rect;
 
+        let title_for_thread = title.clone();
         thread::spawn(move || {
-            // 1) HWND を 50ms 間隔でポーリング(最大 3 秒)
+            // 1) HWND を 100ms 間隔でポーリング(最大 10 秒)。
+            //    タイトル一致で探す(PID 一致は wt.exe stub の即終了で動かない)。
             let mut hwnd_isize: isize = 0;
             for _ in 0..HWND_POLL_MAX_ATTEMPTS {
-                hwnd_isize = find_hwnd_for_pid(pid);
+                hwnd_isize = find_hwnd_by_title(&title_for_thread);
                 if hwnd_isize != 0 {
                     break;
                 }
@@ -307,16 +326,14 @@ impl NativeTerminalBackend for WindowsBackend {
 
             if hwnd_isize == 0 {
                 crate::log(&format!(
-                    "native_terminal/windows: HWND timeout for pane={} pid={}",
-                    pane_id_for_thread, pid
+                    "native_terminal/windows: HWND timeout for pane={} title={}",
+                    pane_id_for_thread, title_for_thread
                 ));
                 emit_event(
                     "native-terminal-error",
                     &pane_id_for_thread,
-                    Some("HWND timeout: CASCADIA_HOSTING_WINDOW_CLASS not found within 3s"),
+                    Some("HWND timeout: title-match for CASCADIA_HOSTING_WINDOW_CLASS not found within 10s"),
                 );
-                // wt.exe が立ち上がってるが識別できないケース。当該プロセスは残しておく
-                // (ユーザーが手動で閉じれば WaitForSingleObject 側で検知される)。
                 spawn_exit_watcher(pid, pane_id_for_thread.clone(), inner.clone());
                 return;
             }
