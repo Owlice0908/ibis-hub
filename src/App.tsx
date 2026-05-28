@@ -20,27 +20,18 @@ const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 // Detect Mac for D&D coordinate handling (wry returns logical points on macOS,
 // physical pixels on Win/Linux — see findDropTargetSession docs).
 const IS_MAC = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
-// Detect Windows host (Tauri WebView2 navigator.platform is "Win32" on Windows).
-const IS_WIN_HOST = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("win") && !IS_MAC;
-
-// Transport 経路の選択:
-// - Tauri Mac      → useTauriTransport (Rust portable-pty / Unix PTY、動作確認済み)
-// - Tauri Windows  → useWS で WSL 内 server.mjs (localhost:9100) に接続。
-//                    portable-pty + ConPTY + wsl.exe の組合せが動かないため、
-//                    既に動いている node-pty 経路を流用するハイブリッド方式。
-// - ブラウザ        → useWS (従来通り)
-const USE_WS_FOR_TAURI_WIN = isTauri && IS_WIN_HOST;
 
 // In dev mode (Vite), connect to the server port. In production, use same host.
-// Tauri Win では tauri://localhost のため host が使えない → WSL の固定ポート 9100 を直指定。
-const WS_URL = USE_WS_FOR_TAURI_WIN
-  ? "ws://localhost:9100"
-  : window.location.port === "1420"
-    ? `ws://${window.location.hostname}:9100`
-    : `ws://${window.location.host}`;
+const WS_URL = window.location.port === "1420"
+  ? `ws://${window.location.hostname}:9100`
+  : `ws://${window.location.host}`;
 
-// Transport hook selected once at module load (safe: isTauri/IS_WIN_HOST never change)
-const useTransport = isTauri && !USE_WS_FOR_TAURI_WIN
+// Transport hook selected once at module load (safe: isTauri never changes)
+// preview.9 で Tauri Win も useTauriTransport に戻す(本筋復帰):
+//   - pty_manager.rs に WSLENV + --cd ~ + bash -l -c 修正を入れた
+//   - portable-pty を 0.8.1 にダウングレード(0.9 の Windows 読み出し回帰回避)
+//   - これで wsl 経由の claude が portable-pty / ConPTY で動く想定
+const useTransport = isTauri
   ? () => useTauriTransport()
   : () => useWS(WS_URL);
 

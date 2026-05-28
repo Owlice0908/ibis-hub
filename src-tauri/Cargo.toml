@@ -30,7 +30,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-portable-pty = "0.9"
+portable-pty = "=0.8.1"  # 0.9.0 は Windows 読み出し回帰(wezterm #6783)。0.8.1 にピン留め(2026-05-28 swarm 調査)
 uuid = { version = "1", features = ["v4"] }
 parking_lot = "0.12"
 base64 = "0.22"

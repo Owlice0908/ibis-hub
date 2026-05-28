@@ -79,21 +79,36 @@ impl PtyManager {
         #[cfg(target_os = "windows")]
         let cmd = {
             let mut c = CommandBuilder::new("wsl.exe");
+            // preview.8 までの引数(`-lic` + cwd Windows パス + WSLENV 未設定)では
+            // wsl 内 bash と ConPTY が仲介できず黒画面のままだった。
+            // swarm 調査(2026-05-28)で確定した修正:
+            // ① `--cd ~` で Linux 側 cwd を明示(Windows パスが Linux 側に漏れない)
+            // ② `bash -l -c` に分割(`-i` を外す。`-c` と非互換、対話モードは claude 側で確保)
+            // ③ WSLENV を明示設定して TERM/LANG/LC_ALL/COLORTERM を Linux 側に渡す
             if session_type == "claude" {
-                c.args(["-d", "Ubuntu", "--", "bash", "-lic", "exec claude -c"]);
+                c.args([
+                    "-d", "Ubuntu",
+                    "--cd", "~",
+                    "--", "bash", "-l", "-c",
+                    "exec claude -c",
+                ]);
             } else {
-                c.args(["-d", "Ubuntu"]);
+                // shell モード: WSL の default login shell に入る(--cd で HOME 明示)
+                c.args(["-d", "Ubuntu", "--cd", "~"]);
             }
-            // portable-pty の cwd は Windows パスを期待。USERPROFILE をデフォルトに。
+            // portable-pty の cwd は Windows プロセス側の作業ディレクトリ。USERPROFILE で OK。
+            // Linux 側 cwd は上記 --cd で別途指定済み。
             if let Ok(home) = std::env::var("USERPROFILE") {
                 c.cwd(&home);
             }
+            // ★ WSLENV: Linux 側に渡したい環境変数のリスト(/u フラグ = ユーザー変数として伝播)
+            c.env("WSLENV", "TERM/u:LANG/u:LC_ALL/u:COLORTERM/u");
             c.env("TERM", "xterm-256color");
             c.env("LANG", "C.UTF-8");
             c.env("LC_ALL", "C.UTF-8");
             c.env("COLORTERM", "truecolor");
             crate::log(&format!(
-                "PTY (Win): wsl.exe -d Ubuntu (session_type={})",
+                "PTY (Win): wsl.exe -d Ubuntu --cd ~ (session_type={}, WSLENV set)",
                 session_type
             ));
             c
