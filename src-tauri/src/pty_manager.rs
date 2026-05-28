@@ -294,14 +294,14 @@ impl PtyManager {
     }
 
     pub fn close_session(&self, id: &str) -> Result<(), String> {
-        let mut session = self.sessions
-            .lock()
-            .remove(id)
-            .ok_or_else(|| "Session not found".to_string())?;
-        // Signal the reader thread to stop
-        session.stop_flag.store(true, Ordering::Relaxed);
-        // Kill the child process
-        let _ = session._child.kill();
+        // Idempotent: 該当セッションが居なければ「もう閉じてる」と解釈して Ok を返す。
+        // 理由: Native モードのセッションは PtyManager に登録されないため、Frontend が
+        //       誤って close_session を呼んだ場合に "Session not found" alert が出るのを防ぐ。
+        let removed = self.sessions.lock().remove(id);
+        if let Some(mut session) = removed {
+            session.stop_flag.store(true, Ordering::Relaxed);
+            let _ = session._child.kill();
+        }
         Ok(())
     }
 

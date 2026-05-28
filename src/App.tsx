@@ -278,25 +278,43 @@ function App() {
   }, [onMessage, send]);
 
   const createSession = useCallback(
-    (type: "claude" | "shell" = "claude", terminalMode: TerminalMode = "xterm") => {
+    (type: "claude" | "shell" = "claude", terminalMode?: TerminalMode) => {
       sessionCountRef.current += 1;
       const baseName =
         type === "claude" ? `Claude ${sessionCountRef.current}` : `Terminal ${sessionCountRef.current}`;
-      // Native モードはサフィックスで識別しやすくする(試作期間中のみ)
-      const name = terminalMode === "native" ? `${baseName} ⚡` : baseName;
+      // モードは明示指定が無ければ環境で自動決定:
+      // Tauri デスクトップ(Win/Mac) → native(OS 純正端末をペインに重ねる)
+      // ブラウザ版(localhost:9100)    → xterm(従来通り)
+      const effectiveMode: TerminalMode = terminalMode ?? (nativeAvailable ? "native" : "xterm");
       send({
         type: "create_session",
-        name,
+        name: baseName,
         session_type: type,
-        terminalMode,
+        terminalMode: effectiveMode,
       });
     },
-    [send],
+    [send, nativeAvailable],
   );
 
   const closeSession = useCallback((id: string) => {
-    send({ type: "close_session", id });
-  }, [send]);
+    // Native セッションは PTY を持たないため、close_session(PtyManager 経路)を呼ぶと
+    // "Session not found" alert が出る。terminalMode で分岐して正しい経路に流す。
+    const session = sessions.find((s) => s.id === id);
+    if (session?.terminalMode === "native") {
+      send({ type: "close_native_terminal", paneId: id });
+      // Native は session_closed イベントを返さないので、Frontend state を手動でクリーンアップ
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+      setActiveSessionIds((prev) => prev.filter((sid) => sid !== id));
+      setFocusedSessionId((prev) => (prev === id ? null : prev));
+      setQuestionSessions((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    } else {
+      send({ type: "close_session", id });
+    }
+  }, [send, sessions]);
 
   const selectSession = useCallback((id: string) => {
     setQuestionSessions((prev) => {
@@ -337,7 +355,6 @@ function App() {
         layout={layout}
         theme={theme}
         questionSessionIds={Array.from(questionSessions)}
-        nativeAvailable={nativeAvailable}
         onLayoutChange={setLayout}
         onThemeChange={setTheme}
         onCreateSession={createSession}

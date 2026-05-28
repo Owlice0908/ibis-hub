@@ -228,19 +228,30 @@ impl NativeTerminalBackend for WindowsBackend {
             )));
         }
 
-        // cwd: None → "~"(後で WSL 側で展開される)。
-        let cwd = opts.cwd.clone().unwrap_or_else(|| "~".to_string());
+        // cwd: None なら cd 自体を省略(WSL の HOME に入る)。
+        //      指定があれば POSIX single-quote で囲って bash に渡す(空白・特殊文字対策)。
+        // preview.5 までは cwd None 時に "~" を入れていたが、bash で `cd '~'` だと
+        // single-quote が tilde 展開を抑制して `cd: ~: No such file or directory` で死ぬ。
+        let bash_cmd = match &opts.cwd {
+            Some(c) if !c.is_empty() => {
+                let escaped = c.replace('\'', "'\\''");
+                format!("cd '{}' && exec claude -c", escaped)
+            }
+            _ => "exec claude -c".to_string(),
+        };
 
-        // wt.exe を起動。タイトルに pane_id を埋め込んで EnumWindows 探索のヒントにもする。
-        // -w new : 新ウィンドウ
-        // -p Ubuntu : Ubuntu プロファイルで開く
-        // wsl.exe -d Ubuntu -- bash -lc "cd '<cwd>'; exec claude -c"
+        // wt.exe を起動。タイトルに pane_id を埋め込んで EnumWindows 探索のヒントにする。
+        // -w new   : 新ウィンドウ(既存 wt にタブ追加されると HWND を共有されて埋め込み破綻)
+        // --title  : 識別用タイトル
+        // -p の Profile 指定はユーザー環境依存(Ubuntu プロファイルが無い PC で失敗するので外す)。
+        //            wt.exe デフォルトプロファイルで動かす。
+        // wsl.exe を直接呼ぶ: `wsl.exe -d Ubuntu -- bash -lic "..."`
+        // -lic で login + interactive にして ~/.bashrc / ~/.profile を読み込ませ PATH 解決を確実化。
         let title = format!("ibis-native-{}", pane_id);
-        let bash_cmd = format!("cd '{}'; exec claude -c", cwd.replace('\'', "'\\''"));
 
         crate::log(&format!(
-            "native_terminal/windows: spawn pane={} cwd={} title={}",
-            pane_id, cwd, title
+            "native_terminal/windows: spawn pane={} cwd={:?} title={}",
+            pane_id, opts.cwd, title
         ));
 
         let child = match Command::new("wt.exe")
@@ -248,14 +259,12 @@ impl NativeTerminalBackend for WindowsBackend {
             .arg("new")
             .arg("--title")
             .arg(&title)
-            .arg("-p")
-            .arg("Ubuntu")
             .arg("wsl.exe")
             .arg("-d")
             .arg("Ubuntu")
             .arg("--")
             .arg("bash")
-            .arg("-lc")
+            .arg("-lic")
             .arg(&bash_cmd)
             .spawn()
         {
