@@ -61,46 +61,84 @@ impl PtyManager {
             .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
         let cwd = working_dir.clone().unwrap_or_else(|| {
-            std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
+            std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| "/".to_string())
         });
 
-        // On macOS, GUI apps don't inherit the user's shell PATH.
-        // Resolve the full PATH by sourcing the user's login shell profile.
-        let user_path = get_user_path();
-        crate::log(&format!("PTY: resolved PATH={}", user_path));
+        // ─────────────────────────────────────────────────────────────
+        // Windows 専用パス: claude は Windows PATH には存在せず WSL Ubuntu 内に居る。
+        // よって wsl.exe を直接 portable-pty で spawn する。これにより ConPTY 経由で
+        // ブラウザ版(server.mjs + node-pty)と同等の体験が xterm.js に流れ込む。
+        //
+        // - claude セッション: wsl.exe -d Ubuntu -- bash -lic "exec claude -c"
+        //   * -lic: login(.profile を読む) + interactive(対話) + コマンド指定
+        //   * exec で bash を置き換えて claude を直接動かす(プロセスチェーンを潰す)
+        // - shell  セッション: wsl.exe -d Ubuntu(default 設定の login shell に入る)
+        // ─────────────────────────────────────────────────────────────
+        #[cfg(target_os = "windows")]
+        let cmd = {
+            let mut c = CommandBuilder::new("wsl.exe");
+            if session_type == "claude" {
+                c.args(["-d", "Ubuntu", "--", "bash", "-lic", "exec claude -c"]);
+            } else {
+                c.args(["-d", "Ubuntu"]);
+            }
+            // portable-pty の cwd は Windows パスを期待。USERPROFILE をデフォルトに。
+            if let Ok(home) = std::env::var("USERPROFILE") {
+                c.cwd(&home);
+            }
+            c.env("TERM", "xterm-256color");
+            c.env("LANG", "C.UTF-8");
+            c.env("LC_ALL", "C.UTF-8");
+            c.env("COLORTERM", "truecolor");
+            crate::log(&format!(
+                "PTY (Win): wsl.exe -d Ubuntu (session_type={})",
+                session_type
+            ));
+            c
+        };
 
-        // Build command with proper environment
-        let cmd = if session_type == "claude" {
-            let claude_path = which_claude_with_path(&user_path).unwrap_or_else(|| "claude".to_string());
-            crate::log(&format!("PTY: claude_path={}", claude_path));
-            let mut c = CommandBuilder::new(&claude_path);
-            c.cwd(&cwd);
-            for (key, value) in std::env::vars() {
-                c.env(key, value);
+        #[cfg(not(target_os = "windows"))]
+        let cmd = {
+            // On macOS, GUI apps don't inherit the user's shell PATH.
+            // Resolve the full PATH by sourcing the user's login shell profile.
+            let user_path = get_user_path();
+            crate::log(&format!("PTY: resolved PATH={}", user_path));
+
+            // Build command with proper environment
+            if session_type == "claude" {
+                let claude_path = which_claude_with_path(&user_path).unwrap_or_else(|| "claude".to_string());
+                crate::log(&format!("PTY: claude_path={}", claude_path));
+                let mut c = CommandBuilder::new(&claude_path);
+                c.cwd(&cwd);
+                for (key, value) in std::env::vars() {
+                    c.env(key, value);
+                }
+                c.env("PATH", &user_path);
+                c.env("TERM", "xterm-256color");
+                c.env("LANG", "C.UTF-8");
+                c.env("LC_ALL", "C.UTF-8");
+                c.env("COLORTERM", "truecolor");
+                c
+            } else {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| {
+                    if cfg!(target_os = "macos") { "/bin/zsh".to_string() }
+                    else { "/bin/bash".to_string() }
+                });
+                let mut c = CommandBuilder::new(&shell);
+                c.args(["-l"]);
+                c.cwd(&cwd);
+                for (key, value) in std::env::vars() {
+                    c.env(key, value);
+                }
+                c.env("PATH", &user_path);
+                c.env("TERM", "xterm-256color");
+                c.env("LANG", "C.UTF-8");
+                c.env("LC_ALL", "C.UTF-8");
+                c.env("COLORTERM", "truecolor");
+                c
             }
-            c.env("PATH", &user_path);
-            c.env("TERM", "xterm-256color");
-            c.env("LANG", "C.UTF-8");
-            c.env("LC_ALL", "C.UTF-8");
-            c.env("COLORTERM", "truecolor");
-            c
-        } else {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| {
-                if cfg!(target_os = "macos") { "/bin/zsh".to_string() }
-                else { "/bin/bash".to_string() }
-            });
-            let mut c = CommandBuilder::new(&shell);
-            c.args(["-l"]);
-            c.cwd(&cwd);
-            for (key, value) in std::env::vars() {
-                c.env(key, value);
-            }
-            c.env("PATH", &user_path);
-            c.env("TERM", "xterm-256color");
-            c.env("LANG", "C.UTF-8");
-            c.env("LC_ALL", "C.UTF-8");
-            c.env("COLORTERM", "truecolor");
-            c
         };
 
         let child = pair

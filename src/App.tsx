@@ -282,10 +282,11 @@ function App() {
       sessionCountRef.current += 1;
       const baseName =
         type === "claude" ? `Claude ${sessionCountRef.current}` : `Terminal ${sessionCountRef.current}`;
-      // モードは明示指定が無ければ環境で自動決定:
-      // Tauri デスクトップ(Win/Mac) → native(OS 純正端末をペインに重ねる)
-      // ブラウザ版(localhost:9100)    → xterm(従来通り)
-      const effectiveMode: TerminalMode = terminalMode ?? (nativeAvailable ? "native" : "xterm");
+      // 全環境で xterm モードがデフォルト。
+      // Tauri Win では pty_manager.rs が wsl.exe を spawn してブラウザ版と同等の挙動を実現する。
+      // Native overlay モード(wt.exe を重ねる方式)は試作コードとして残しているが、
+      // デフォルトでは使用しない(明示的に terminalMode="native" を渡した場合のみ)。
+      const effectiveMode: TerminalMode = terminalMode ?? "xterm";
       send({
         type: "create_session",
         name: baseName,
@@ -293,7 +294,7 @@ function App() {
         terminalMode: effectiveMode,
       });
     },
-    [send, nativeAvailable],
+    [send],
   );
 
   const closeSession = useCallback((id: string) => {
