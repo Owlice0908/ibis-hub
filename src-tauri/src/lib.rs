@@ -384,20 +384,21 @@ pub fn run() {
             ));
             app.manage(NativeTerminalManager::new(native_backend));
 
-            // アプリ終了時に全ネイティブ端末を後始末する
-            let app_handle = app.handle().clone();
-            app.handle().clone().on_window_event(
-                "main", // メインウィンドウのラベル
-                move |event| {
-                    if let tauri::WindowEvent::CloseRequested { .. } = event {
-                        if let Some(mgr) = app_handle.try_state::<NativeTerminalManager>() {
-                            mgr.backend.close_all();
-                        }
-                    }
-                },
-            );
+            // アプリ終了時の後始末は Builder の .on_window_event() に登録(下記)。
+            // AppHandle には on_window_event がないため、ここでは登録しない。
 
             Ok(())
+        })
+        // メインウィンドウが閉じられる時に全ネイティブ端末をクリーンアップ
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if let Some(mgr) = window
+                    .app_handle()
+                    .try_state::<NativeTerminalManager>()
+                {
+                    mgr.backend.close_all();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             create_session,

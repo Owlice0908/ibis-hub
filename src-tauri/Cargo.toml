@@ -46,6 +46,7 @@ objc = "0.2"
 cocoa = "0.26"
 # Native terminal overlay (Preview feature): AXAPI / CGWindowList / NSWindowLevel 経由で Terminal.app をペインに重ねる
 core-foundation = "0.9"
+core-foundation-sys = "0.8"
 core-graphics = "0.24"
 accessibility-sys = "0.1"
 
