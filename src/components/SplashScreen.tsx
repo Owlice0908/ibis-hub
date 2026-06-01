@@ -1,31 +1,5 @@
 import { useEffect, useRef } from "react";
-
-const PATHS = [
-  "M 72 118 C 68 100, 62 78, 70 58 C 78 38, 100 22, 128 18",
-  "M 68 126 C 62 110, 58 90, 68 72 C 78 54, 100 42, 136 38",
-  "M 64 134 C 58 120, 56 102, 68 86 C 80 70, 106 58, 142 56",
-  "M 60 140 C 56 128, 58 114, 72 100 C 86 86, 114 76, 148 74",
-  "M 60 140 C 80 130, 110 108, 132 96 C 154 84, 170 78, 182 82",
-  "M 60 140 C 74 142, 100 138, 126 128 C 152 118, 170 104, 180 90",
-  "M 60 140 C 52 148, 40 158, 28 164 C 16 170, 10 168, 14 160",
-  "M 60 140 C 50 152, 36 166, 22 176 C 8 186, 4 184, 10 174",
-];
-
-function samplePath(pathStr: string, count: number): { x: number; y: number }[] {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", pathStr);
-  svg.appendChild(path);
-  document.body.appendChild(svg);
-  const len = path.getTotalLength();
-  const points: { x: number; y: number }[] = [];
-  for (let i = 0; i < count; i++) {
-    const pt = path.getPointAtLength((i / (count - 1)) * len);
-    points.push({ x: pt.x, y: pt.y });
-  }
-  document.body.removeChild(svg);
-  return points;
-}
+import appIcon from "../assets/logo-hd.png";
 
 interface Star {
   x: number;
@@ -76,6 +50,44 @@ const PHASE = {
   FADE_END: DURATION,
 };
 
+function sampleImagePoints(
+  img: HTMLImageElement,
+  count: number,
+  alphaThreshold = 128,
+): { x: number; y: number; size: number }[] {
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(img, 0, 0);
+  const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+  const opaque: { x: number; y: number }[] = [];
+  const step = 2;
+  for (let y = 0; y < canvas.height; y += step) {
+    for (let x = 0; x < canvas.width; x += step) {
+      const idx = (y * canvas.width + x) * 4;
+      if (data[idx + 3] > alphaThreshold) {
+        opaque.push({ x, y });
+      }
+    }
+  }
+
+  if (opaque.length === 0) return [];
+
+  const out: { x: number; y: number; size: number }[] = [];
+  if (opaque.length <= count) {
+    opaque.forEach((p) => out.push({ x: p.x, y: p.y, size: 1.2 + Math.random() * 1.8 }));
+    return out;
+  }
+  const stride = opaque.length / count;
+  for (let i = 0; i < count; i++) {
+    const p = opaque[Math.floor(i * stride)];
+    out.push({ x: p.x, y: p.y, size: 1.2 + Math.random() * 1.8 });
+  }
+  return out;
+}
+
 export default function SplashScreen({ onDone }: { onDone: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const doneRef = useRef(false);
@@ -93,12 +105,11 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
     canvas.style.width = W + "px";
     canvas.style.height = H + "px";
     ctx.scale(dpr, dpr);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
 
     const cx = W / 2;
     const cy = H / 2 - 20;
-    const logoScale = Math.min(W, H) * 0.004;
-    const logoOffsetX = cx - 100 * logoScale;
-    const logoOffsetY = cy - 100 * logoScale;
 
     const stars: Star[] = [];
     for (let i = 0; i < 200; i++) {
@@ -113,47 +124,26 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
     }
 
     const logoParticles: LogoParticle[] = [];
-    const particlesPerPath = 25;
-    PATHS.forEach((pathStr, pathIdx) => {
-      const pts = samplePath(pathStr, particlesPerPath);
-      pts.forEach((pt, ptIdx) => {
-        const angle = Math.random() * Math.PI * 2;
-        const dist = 300 + Math.random() * 400;
-        const ox = cx + Math.cos(angle) * dist;
-        const oy = cy + Math.sin(angle) * dist;
-        const tx = logoOffsetX + pt.x * logoScale;
-        const ty = logoOffsetY + pt.y * logoScale;
-        logoParticles.push({
-          targetX: tx,
-          targetY: ty,
-          x: ox,
-          y: oy,
-          originX: ox,
-          originY: oy,
-          size: 1.2 + Math.random() * 1.8,
-          hue: 190 + pathIdx * 5 + Math.random() * 10,
-          delay: pathIdx * 0.06 + (ptIdx / particlesPerPath) * 0.04,
-          arrived: false,
-          trailX: [],
-          trailY: [],
-        });
-      });
-    });
-
     const burstParticles: BurstParticle[] = [];
 
     const textStr = "IBIS HUB";
     const subText = "MULTI-SESSION MANAGER";
 
-    const start = performance.now();
-    let animId = 0;
-
     const easeInOut = (t: number) =>
       t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-
     const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
 
+    let animId = 0;
+    let start = 0;
+    let logoImg: HTMLImageElement | null = null;
+    let logoDisplaySize = 0;
+    let logoOffsetX = 0;
+    let logoOffsetY = 0;
+    let imgNaturalW = 0;
+    let imgNaturalH = 0;
+
     function render(now: number) {
+      if (!start) start = now;
       const elapsed = now - start;
       if (elapsed >= DURATION) {
         if (!doneRef.current) {
@@ -169,15 +159,10 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
       const starAlpha = Math.min(1, elapsed / 800);
       stars.forEach((s) => {
         const twinkle =
-          0.5 +
-          0.5 *
-            Math.sin(
-              elapsed * 0.001 * s.twinkleSpeed + s.twinkleOffset
-            );
+          0.5 + 0.5 * Math.sin(elapsed * 0.001 * s.twinkleSpeed + s.twinkleOffset);
         const a = s.brightness * twinkle * starAlpha;
         if (elapsed > PHASE.HOLD_END) {
-          const fadeProgress =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          const fadeProgress = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
           ctx.globalAlpha = a * (1 - fadeProgress);
         } else {
           ctx.globalAlpha = a;
@@ -191,17 +176,13 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
 
       const convergeProgress = Math.max(
         0,
-        Math.min(
-          1,
-          (elapsed - PHASE.CONVERGE_START) /
-            (PHASE.CONVERGE_END - PHASE.CONVERGE_START)
-        )
+        Math.min(1, (elapsed - PHASE.CONVERGE_START) / (PHASE.CONVERGE_END - PHASE.CONVERGE_START)),
       );
 
       logoParticles.forEach((p) => {
         const adjustedProgress = Math.max(
           0,
-          Math.min(1, (convergeProgress - p.delay) / (1 - p.delay))
+          Math.min(1, (convergeProgress - p.delay) / (1 - p.delay)),
         );
         const eased = easeInOut(adjustedProgress);
 
@@ -231,18 +212,13 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         if (p.arrived) {
           const glowT = Math.max(
             0,
-            Math.min(
-              1,
-              (elapsed - PHASE.CONVERGE_END) /
-                (PHASE.GLOW_PEAK - PHASE.CONVERGE_END)
-            )
+            Math.min(1, (elapsed - PHASE.CONVERGE_END) / (PHASE.GLOW_PEAK - PHASE.CONVERGE_END)),
           );
           alpha = 0.8 + glowT * 0.2;
         }
 
         if (elapsed > PHASE.HOLD_END) {
-          const fadeT =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
           alpha *= 1 - fadeT;
         }
 
@@ -263,69 +239,39 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
 
       const allArrived = convergeProgress >= 1;
 
-      if (allArrived) {
+      if (allArrived && logoImg) {
         const glowT = Math.max(
           0,
-          Math.min(
-            1,
-            (elapsed - PHASE.CONVERGE_END) /
-              (PHASE.GLOW_PEAK - PHASE.CONVERGE_END)
-          )
+          Math.min(1, (elapsed - PHASE.CONVERGE_END) / (PHASE.GLOW_PEAK - PHASE.CONVERGE_END)),
         );
         const glowEased = easeOut(glowT);
 
         let glowAlpha = glowEased * 0.25;
         if (elapsed > PHASE.HOLD_END) {
-          const fadeT =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
           glowAlpha *= 1 - fadeT;
         }
 
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 180 * logoScale);
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, logoDisplaySize * 0.9);
         grad.addColorStop(0, `rgba(100, 180, 220, ${glowAlpha})`);
         grad.addColorStop(0.5, `rgba(100, 180, 220, ${glowAlpha * 0.3})`);
         grad.addColorStop(1, "transparent");
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, W, H);
 
-        const offscreen = document.createElement("canvas");
-        offscreen.width = 200 * logoScale * dpr;
-        offscreen.height = 200 * logoScale * dpr;
-        const octx = offscreen.getContext("2d")!;
-        octx.scale(dpr, dpr);
-        octx.scale(logoScale, logoScale);
-        octx.strokeStyle = `rgba(100, 180, 220, ${glowEased * 0.4})`;
-        octx.lineWidth = 3;
-        octx.lineCap = "round";
-        octx.lineJoin = "round";
-
-        PATHS.forEach((pathStr) => {
-          const p2d = new Path2D(pathStr);
-          octx.stroke(p2d);
-        });
-
-        let lineAlpha = glowEased * 0.4;
+        let iconAlpha = glowEased;
         if (elapsed > PHASE.HOLD_END) {
-          const fadeT =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
-          lineAlpha *= 1 - fadeT;
+          const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          iconAlpha *= 1 - fadeT;
         }
-        ctx.globalAlpha = lineAlpha > 0 ? lineAlpha / (glowEased * 0.4 || 1) : 0;
-        ctx.drawImage(
-          offscreen,
-          logoOffsetX,
-          logoOffsetY,
-          200 * logoScale,
-          200 * logoScale
-        );
-        ctx.globalAlpha = 1;
+        if (iconAlpha > 0) {
+          ctx.globalAlpha = iconAlpha;
+          ctx.drawImage(logoImg, logoOffsetX, logoOffsetY, logoDisplaySize, logoDisplaySize);
+          ctx.globalAlpha = 1;
+        }
       }
 
-      if (
-        elapsed >= PHASE.BURST &&
-        elapsed < PHASE.BURST + 200 &&
-        burstParticles.length < 60
-      ) {
+      if (elapsed >= PHASE.BURST && elapsed < PHASE.BURST + 200 && burstParticles.length < 60) {
         for (let i = 0; i < 5; i++) {
           const angle = Math.random() * Math.PI * 2;
           const speed = 2 + Math.random() * 5;
@@ -356,8 +302,7 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         const prog = bp.life / bp.maxLife;
         let a = prog < 0.2 ? prog / 0.2 : 1 - (prog - 0.2) / 0.8;
         if (elapsed > PHASE.HOLD_END) {
-          const fadeT =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
           a *= 1 - fadeT;
         }
         ctx.beginPath();
@@ -372,17 +317,13 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
 
       const textProgress = Math.max(
         0,
-        Math.min(
-          1,
-          (elapsed - PHASE.TEXT_START) / (PHASE.TEXT_DONE - PHASE.TEXT_START)
-        )
+        Math.min(1, (elapsed - PHASE.TEXT_START) / (PHASE.TEXT_DONE - PHASE.TEXT_START)),
       );
 
       if (textProgress > 0) {
         let textAlpha = easeOut(textProgress);
         if (elapsed > PHASE.HOLD_END) {
-          const fadeT =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
           textAlpha *= 1 - fadeT;
         }
 
@@ -390,7 +331,7 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
 
-        const textY = cy + 110 * logoScale;
+        const textY = cy + logoDisplaySize * 0.55;
         ctx.font = `300 ${22}px 'Inter', -apple-system, sans-serif`;
         ctx.letterSpacing = "8px";
 
@@ -402,7 +343,7 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         chars.forEach((char, i) => {
           const charProgress = Math.max(
             0,
-            Math.min(1, (textProgress - i * 0.08) / 0.4)
+            Math.min(1, (textProgress - i * 0.08) / 0.4),
           );
           const charEased = easeOut(charProgress);
           const charAlpha = charEased * textAlpha;
@@ -433,8 +374,7 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
       }
 
       if (elapsed > PHASE.HOLD_END) {
-        const fadeT =
-          (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+        const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
         ctx.fillStyle = `rgba(11, 14, 17, ${easeOut(fadeT)})`;
         ctx.fillRect(0, 0, W, H);
       }
@@ -442,7 +382,43 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
       animId = requestAnimationFrame(render);
     }
 
-    animId = requestAnimationFrame(render);
+    const img = new Image();
+    img.onload = () => {
+      logoImg = img;
+      imgNaturalW = img.naturalWidth;
+      imgNaturalH = img.naturalHeight;
+
+      logoDisplaySize = Math.min(W, H) * 0.45;
+      logoOffsetX = cx - logoDisplaySize / 2;
+      logoOffsetY = cy - logoDisplaySize / 2;
+
+      const points = sampleImagePoints(img, 700);
+      points.forEach((pt, idx) => {
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 300 + Math.random() * 400;
+        const ox = cx + Math.cos(angle) * dist;
+        const oy = cy + Math.sin(angle) * dist;
+        const tx = logoOffsetX + (pt.x / imgNaturalW) * logoDisplaySize;
+        const ty = logoOffsetY + (pt.y / imgNaturalH) * logoDisplaySize;
+        logoParticles.push({
+          targetX: tx,
+          targetY: ty,
+          x: ox,
+          y: oy,
+          originX: ox,
+          originY: oy,
+          size: pt.size,
+          hue: 190 + Math.random() * 20,
+          delay: (idx / points.length) * 0.3,
+          arrived: false,
+          trailX: [],
+          trailY: [],
+        });
+      });
+
+      animId = requestAnimationFrame(render);
+    };
+    img.src = appIcon;
 
     return () => cancelAnimationFrame(animId);
   }, [onDone]);
