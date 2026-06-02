@@ -200,11 +200,29 @@ fn strip_window_chrome(hwnd: HWND) {
     }
 }
 
-/// CSS px の PaneRect を物理 px に変換し SetWindowPos で配置する。show=true なら SHOWWINDOW フラグも立てる。
+/// Tauri メインウィンドウのクライアント領域(WebView)左上のスクリーン物理 px 座標。
+/// 取得失敗時は (0, 0) を返す(= フォールバックでデスクトップ左上扱い)。
+fn main_inner_position_screen_px() -> (i32, i32) {
+    use tauri::Manager;
+    let Some(app) = app_handle() else { return (0, 0); };
+    let Some(win) = app.get_webview_window("main") else { return (0, 0); };
+    match win.inner_position() {
+        Ok(pos) => (pos.x, pos.y),
+        Err(_) => (0, 0),
+    }
+}
+
+/// CSS px の PaneRect(クライアント領域相対座標)を物理 px のスクリーン絶対座標に変換し
+/// SetWindowPos で配置する。show=true なら SHOWWINDOW フラグも立てる。
+///
+/// preview.5〜11 では Tauri ウィンドウのスクリーン位置を加算しておらず、wt.exe が
+/// デスクトップ左上に張り付いていた(「枠に収まらない」の真因)。preview.12 で修正。
 fn apply_rect(hwnd: HWND, rect: &PaneRect, show: bool) -> windows::core::Result<()> {
     let sf = if rect.scale_factor <= 0.0 { 1.0 } else { rect.scale_factor };
-    let x = (rect.x * sf).round() as i32;
-    let y = (rect.y * sf).round() as i32;
+    let (off_x, off_y) = main_inner_position_screen_px();
+    // inner_position は既に物理 px(Tauri 2 仕様) なので scaleFactor を掛けない
+    let x = off_x + (rect.x * sf).round() as i32;
+    let y = off_y + (rect.y * sf).round() as i32;
     let w = (rect.width * sf).round() as i32;
     let h = (rect.height * sf).round() as i32;
 
@@ -402,6 +420,16 @@ impl NativeTerminalBackend for WindowsBackend {
         let _ = apply_rect(hwnd, &rect, handle.visible);
         handle.last_rect = rect;
         Ok(())
+    }
+
+    /// メインウィンドウが移動・リサイズしたら全ペインの wt.exe を新しいオフセットで再配置。
+    /// 高頻度に呼ばれる前提なので update_rect と同じく失敗は silent。
+    fn reapply_all_rects(&self) {
+        let map = self.inner.lock();
+        for (_pane_id, handle) in map.iter() {
+            let hwnd = HWND(handle.hwnd as *mut _);
+            let _ = apply_rect(hwnd, &handle.last_rect, handle.visible);
+        }
     }
 
     fn set_visible(&self, pane_id: &str, visible: bool) -> Result<(), NativeTerminalError> {

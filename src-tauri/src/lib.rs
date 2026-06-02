@@ -389,15 +389,21 @@ pub fn run() {
 
             Ok(())
         })
-        // メインウィンドウが閉じられる時に全ネイティブ端末をクリーンアップ
+        // メインウィンドウのイベント:
+        //   CloseRequested → 全ネイティブ端末をクリーンアップ
+        //   Moved/Resized  → 全ネイティブ端末の矩形を再適用(wt.exe を追従させる)
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                if let Some(mgr) = window
-                    .app_handle()
-                    .try_state::<NativeTerminalManager>()
-                {
+            let Some(mgr) = window.app_handle().try_state::<NativeTerminalManager>() else {
+                return;
+            };
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
                     mgr.backend.close_all();
                 }
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    mgr.backend.reapply_all_rects();
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![

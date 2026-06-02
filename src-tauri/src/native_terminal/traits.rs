@@ -107,6 +107,13 @@ pub trait NativeTerminalBackend: Send + Sync {
     fn permission_status(&self) -> Option<String> {
         None
     }
+
+    /// 全ペインの矩形を再適用する(Tauri メインウィンドウが移動・リサイズした時用)。
+    /// React 側 getBoundingClientRect は client 相対なのでメイン窓の移動だけでは変わらず、
+    /// Rust 側で保存している last_rect を「新しい inner_position オフセット」で再計算して
+    /// SetWindowPos (Win) / AXSetAttributeValue (Mac) で wt.exe / Terminal.app を追従させる。
+    /// macOS は AXAPI 内で既にグローバル座標を使うため通常 no-op で可。
+    fn reapply_all_rects(&self) {}
 }
 
 /// 非対応 OS 用のスタブ。全 API が NotSupported を返す。
