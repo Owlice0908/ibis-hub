@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# MCP config: may contain credentials at runtime — never commit
+.mcp.json
