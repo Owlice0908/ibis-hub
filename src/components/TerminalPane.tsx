@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import type { ThemeMode } from "../types";
 import {
@@ -87,6 +88,7 @@ export default function TerminalPane({
   const termRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const webglAddonRef = useRef<WebglAddon | null>(null);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const visibleRef = useRef(isVisible);
   const bufferedDataRef = useRef("");
@@ -94,6 +96,34 @@ export default function TerminalPane({
   const dragDepthRef = useRef(0);
   const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB
   const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB max buffer for hidden terminals
+
+  // GPU-accelerated renderer toggle. The WebGL renderer scrolls dramatically
+  // faster than xterm's default DOM renderer (which builds a <span> per styled
+  // run — very slow with CJK + large scrollback). We only attach it to visible
+  // panes to stay within the browser's small WebGL-context budget; hidden panes
+  // keep the cheap DOM renderer until shown. On context loss we dispose and fall
+  // back to the DOM renderer automatically.
+  const setWebgl = useCallback((enable: boolean) => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    if (enable && !webglAddonRef.current) {
+      try {
+        const addon = new WebglAddon();
+        addon.onContextLoss(() => {
+          try { addon.dispose(); } catch {}
+          if (webglAddonRef.current === addon) webglAddonRef.current = null;
+        });
+        terminal.loadAddon(addon);
+        webglAddonRef.current = addon;
+      } catch {
+        // WebGL unavailable (e.g. lost GPU, too many contexts) → stay on DOM renderer
+        webglAddonRef.current = null;
+      }
+    } else if (!enable && webglAddonRef.current) {
+      try { webglAddonRef.current.dispose(); } catch {}
+      webglAddonRef.current = null;
+    }
+  }, []);
 
   const safeFit = useCallback((fitAddon: FitAddon, terminal: Terminal) => {
     const dims = fitAddon.proposeDimensions();
@@ -178,6 +208,7 @@ export default function TerminalPane({
     visibleRef.current = isVisible;
     if (isVisible && terminalRef.current) {
       const terminal = terminalRef.current;
+      setWebgl(true);
       if (bufferedDataRef.current) {
         terminal.write(bufferedDataRef.current);
         bufferedDataRef.current = "";
@@ -193,6 +224,9 @@ export default function TerminalPane({
         } catch {}
         terminal.scrollToBottom();
       });
+    } else if (!isVisible) {
+      // Free the WebGL context while hidden so visible panes keep their budget.
+      setWebgl(false);
     }
   }, [isVisible]);
 
@@ -310,6 +344,10 @@ export default function TerminalPane({
       } catch {};
     };
     requestAnimationFrame(() => initialFit());
+
+    // Attach the GPU renderer up front for panes that mount already-visible
+    // (the visibility effect handles later show/hide transitions).
+    if (visibleRef.current) setWebgl(true);
 
     // Guard: when effect re-runs or cleans up, mark this instance as dead
     // so no stale closure can write to a disposed terminal
@@ -451,6 +489,10 @@ export default function TerminalPane({
       document.removeEventListener("mousedown", handleAltClick, true);
       onData.dispose();
       unsubscribe();
+      if (webglAddonRef.current) {
+        try { webglAddonRef.current.dispose(); } catch {}
+        webglAddonRef.current = null;
+      }
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
