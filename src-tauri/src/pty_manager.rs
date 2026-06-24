@@ -66,10 +66,12 @@ impl PtyManager {
         crate::log(&format!("PTY: resolved PATH={}", user_path));
 
         // Build command with proper environment
-        let cmd = if session_type == "claude" {
-            let claude_path = which_claude_with_path(&user_path).unwrap_or_else(|| "claude".to_string());
-            crate::log(&format!("PTY: claude_path={}", claude_path));
-            let mut c = CommandBuilder::new(&claude_path);
+        let cmd = if session_type == "claude" || session_type == "chatgpt" {
+            // ChatGPT sessions launch OpenAI's `codex` CLI; Claude sessions launch `claude`.
+            let bin = if session_type == "chatgpt" { "codex" } else { "claude" };
+            let bin_path = which_agent_with_path(bin, &user_path).unwrap_or_else(|| bin.to_string());
+            crate::log(&format!("PTY: {}_path={}", bin, bin_path));
+            let mut c = CommandBuilder::new(&bin_path);
             c.cwd(&cwd);
             for (key, value) in std::env::vars() {
                 c.env(key, value);
@@ -346,12 +348,14 @@ fn get_user_path() -> String {
     )
 }
 
-/// Find the claude binary using the resolved user PATH
-fn which_claude_with_path(path: &str) -> Option<String> {
+/// Find an agent CLI binary (e.g. "claude", "codex") using the resolved user PATH.
+/// Mirrors the same lookup strategy used for claude so newly added agents
+/// (like the ChatGPT/codex session type) resolve identically.
+fn which_agent_with_path(bin: &str, path: &str) -> Option<String> {
     // Try PATH lookup with the resolved PATH
     let which_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
     if let Ok(output) = std::process::Command::new(which_cmd)
-        .arg("claude")
+        .arg(bin)
         .env("PATH", path)
         .output()
     {
@@ -374,11 +378,11 @@ fn which_claude_with_path(path: &str) -> Option<String> {
 
     // Check common locations (Unix + Mac + Windows)
     let candidates = [
-        format!("{}/.npm-global/bin/claude", home),
-        "/usr/local/bin/claude".to_string(),
-        "/opt/homebrew/bin/claude".to_string(),
-        format!("{}/AppData/Roaming/npm/claude.cmd", home),
-        format!("{}/AppData/Roaming/npm/claude", home),
+        format!("{}/.npm-global/bin/{}", home, bin),
+        format!("/usr/local/bin/{}", bin),
+        format!("/opt/homebrew/bin/{}", bin),
+        format!("{}/AppData/Roaming/npm/{}.cmd", home, bin),
+        format!("{}/AppData/Roaming/npm/{}", home, bin),
     ];
 
     for candidate in &candidates {
@@ -391,9 +395,9 @@ fn which_claude_with_path(path: &str) -> Option<String> {
     let nvm_dir = format!("{}/.nvm/versions/node", home);
     if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
         for entry in entries.flatten() {
-            let claude_path = entry.path().join("bin/claude");
-            if claude_path.exists() {
-                return Some(claude_path.to_string_lossy().to_string());
+            let bin_path = entry.path().join(format!("bin/{}", bin));
+            if bin_path.exists() {
+                return Some(bin_path.to_string_lossy().to_string());
             }
         }
     }

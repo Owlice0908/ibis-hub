@@ -221,10 +221,12 @@ wss.on("connection", (ws) => {
           broadcastToSubscribers(session, { type: "session_exited", id });
         });
 
-        // For claude sessions, send "claude" command after shell is ready
-        if (sessionType === "claude") {
+        // For agent sessions, launch the CLI once the shell is ready.
+        // claude -> `claude`, chatgpt -> OpenAI's `codex` CLI.
+        const agentCmd = sessionType === "claude" ? "claude" : sessionType === "chatgpt" ? "codex" : null;
+        if (agentCmd) {
           setTimeout(() => {
-            proc.write("claude\n");
+            proc.write(`${agentCmd}\n`);
           }, 500);
         }
 
@@ -421,8 +423,9 @@ httpServer.listen(PORT, () => {
           broadcastToSubscribers(session, { type: "session_exited", id: s.id });
         });
 
-        if (sessionType === "claude") {
-          setTimeout(() => { proc.write("claude\n"); }, 500);
+        const restoreAgentCmd = sessionType === "claude" ? "claude" : sessionType === "chatgpt" ? "codex" : null;
+        if (restoreAgentCmd) {
+          setTimeout(() => { proc.write(`${restoreAgentCmd}\n`); }, 500);
         }
 
         console.log(`  Restored: ${s.name} (${sessionType})`);

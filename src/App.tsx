@@ -230,11 +230,12 @@ function App() {
     });
   }, [onMessage, send]);
 
-  const createSession = useCallback((type: "claude" | "shell" = "claude") => {
+  const createSession = useCallback((type: "claude" | "shell" | "chatgpt" = "claude") => {
     sessionCountRef.current += 1;
+    const label = type === "claude" ? "Claude" : type === "chatgpt" ? "ChatGPT" : "Terminal";
     send({
       type: "create_session",
-      name: type === "claude" ? `Claude ${sessionCountRef.current}` : `Terminal ${sessionCountRef.current}`,
+      name: `${label} ${sessionCountRef.current}`,
       session_type: type,
     });
   }, [send]);
@@ -311,6 +312,12 @@ function App() {
                   className="px-6 py-3 bg-accent hover:bg-accent-hover text-white rounded-lg transition-colors font-medium"
                 >
                   + Claude
+                </button>
+                <button
+                  onClick={() => createSession("chatgpt")}
+                  className="px-6 py-3 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors font-medium"
+                >
+                  + ChatGPT
                 </button>
                 <button
                   onClick={() => createSession("shell")}

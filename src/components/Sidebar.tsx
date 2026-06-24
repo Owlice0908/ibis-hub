@@ -12,7 +12,7 @@ interface SidebarProps {
   questionSessionIds: string[];
   onLayoutChange: (layout: LayoutMode) => void;
   onThemeChange: (theme: ThemeMode) => void;
-  onCreateSession: (type?: "claude" | "shell") => void;
+  onCreateSession: (type?: "claude" | "shell" | "chatgpt") => void;
   onSelectSession: (id: string) => void;
   onCloseSession: (id: string) => void;
   onRenameSession: (id: string, name: string) => void;
@@ -181,6 +181,12 @@ export default function Sidebar({
           className="flex-1 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors font-medium"
         >
           + Claude
+        </button>
+        <button
+          onClick={() => onCreateSession("chatgpt")}
+          className="flex-1 py-2 bg-green-600 hover:bg-green-500 text-white text-sm rounded-md transition-colors font-medium"
+        >
+          + ChatGPT
         </button>
         <button
           onClick={() => onCreateSession("shell")}
