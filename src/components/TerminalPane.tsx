@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import type { ThemeMode, TerminalMode, PaneRect } from "../types";
 import {
@@ -298,6 +299,16 @@ export default function TerminalPane({
       termRef.current.removeChild(termRef.current.firstChild);
     }
     terminal.open(termRef.current);
+
+    // GPU 描画(WebGL)で大量ログ出力時のもたつきを解消。DOM レンダラより大幅に速い。
+    // WebGL 不可環境(context 喪失含む)では dispose して xterm 既定の DOM レンダラへ自動フォールバック。
+    try {
+      const webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => webglAddon.dispose());
+      terminal.loadAddon(webglAddon);
+    } catch {
+      // WebGL 初期化不可 — DOM レンダラのまま継続(機能は維持、速度のみ既定)
+    }
 
     // Initial fit: retry until container has real dimensions (Grid layout
     // may start at width=0 and expand later, causing cols=1 → vertical text).
