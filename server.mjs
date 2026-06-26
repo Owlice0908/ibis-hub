@@ -30,6 +30,19 @@ function readScrollbackFromDisk(id) {
 function deleteScrollbackFromDisk(id) {
   try { unlinkSync(scrollbackPath(id)); } catch {}
 }
+// When a tab reattaches (reload/restore) we replay saved scrollback into xterm.
+// Some bytes in that history have SIDE EFFECTS if re-fed to a live terminal:
+// device-attribute queries make xterm REPLY (the reply lands on the shell's
+// stdin as "1;2c", breaking the next command — e.g. `claude --resume`), and
+// mouse-tracking mode switches get re-enabled (leaking "35;74;22M" once the app
+// that owned them is gone). Strip those — we only want the VISIBLE text/colors
+// back, not to re-run terminal state changes.
+function sanitizeScrollbackForReplay(s) {
+  return s
+    .replace(/\x1b\[[>=]?[0-9;]*c/g, "")            // DA queries (xterm would reply)
+    .replace(/\x1b\[[0-9;]*n/g, "")                 // DSR / status queries
+    .replace(/\x1b\[\?(9|100[0-6]|101[56])[hl]/g, ""); // mouse tracking modes
+}
 
 // Claude session ids already assigned to a session, so two sessions can never
 // resume the SAME conversation (which would make them mirror each other).
@@ -609,7 +622,7 @@ wss.on("connection", (ws, req) => {
           s.subscribers.add(ws);
           // Send scrollback only on first attach (prevent duplicate output)
           if (!alreadySubscribed && s.scrollback) {
-            ws.send(JSON.stringify({ type: "pty_output", id: msg.id, data: s.scrollback }));
+            ws.send(JSON.stringify({ type: "pty_output", id: msg.id, data: sanitizeScrollbackForReplay(s.scrollback) }));
           }
           // Tell the client the current auto-Yes state so the toggle reflects
           // reality (e.g. shows green) after a reload/reconnect.
