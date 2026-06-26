@@ -563,6 +563,24 @@ export default function TerminalPane({
     };
     window.addEventListener("ibis-clear-all", clearHandler);
 
+    // 2026-06-26 Shift+wheel 対応:
+    //   Edge/Chrome のデフォルトでは Shift+wheel が「水平スクロール」に割当られ、
+    //   xterm.js の wheel handler に届かない。結果として Shift+ドラッグで選択中に
+    //   スクロールバックを延ばせず「画面に映ってる分しか選択できない」状態だった。
+    //   capture phase で先取りして shiftKey の時は scrollLines() に振り替える。
+    const handleShiftWheel = (e: WheelEvent) => {
+      if (!e.shiftKey) return; // 通常 wheel は xterm 既定処理に任せる
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        // deltaY 正 = 下方向。1 notch ≒ 100px → 約 3 行が標準的な体感量
+        const lines = Math.sign(e.deltaY) * Math.max(1, Math.round(Math.abs(e.deltaY) / 30));
+        terminal.scrollLines(lines);
+      } catch {}
+    };
+    const termContainerForWheel = termRef.current;
+    termContainerForWheel?.addEventListener("wheel", handleShiftWheel, { passive: false, capture: true });
+
     // Right-click: Windows Terminal style smart copy/paste.
     // The copy-vs-paste decision is delegated to the unit-tested
     // `decideRightClick` pure function so test and production stay in sync.
