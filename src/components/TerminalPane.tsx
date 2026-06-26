@@ -15,6 +15,42 @@ import {
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const IS_MAC = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
 
+// ──────────────────────────────────────────────────────────────────────
+// クリップボード書込みヘルパ (2026-06-26 復元、元実装は 7059895):
+// - 主経路: hidden textarea + document.execCommand("copy")。permission 不要、
+//   user-select:none 環境でも動作、LAN/Tailscale IP 等で navigator.clipboard が
+//   使えない場合のフォールバックを兼ねる。
+// - 並行: window.isSecureContext + navigator.clipboard.writeText を best-effort
+//   で試行。両方走らせて少なくとも片方が成功する設計。
+// - staff 取り込み (ddc736e) で消えた修正の復元。
+// ──────────────────────────────────────────────────────────────────────
+function copyToClipboard(text: string) {
+  fallbackCopy(text);
+  try {
+    if (window.isSecureContext && navigator.clipboard) {
+      navigator.clipboard.writeText(text).catch(() => {});
+    }
+  } catch { /* ignore */ }
+}
+function fallbackCopy(text: string) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    // App-wide `user-select: none` would block selection inside the textarea
+    // and cause execCommand("copy") to copy nothing — force "text" here.
+    ta.style.userSelect = "text";
+    (ta.style as any).webkitUserSelect = "text";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  } catch { /* leave clipboard unchanged */ }
+}
+
 const DARK_THEME = {
   background: "#0f0f0f",
   foreground: "#e5e5e5",
@@ -307,6 +343,15 @@ export default function TerminalPane({
         wsSend({ type: "write", id: sessionId, data: "\x1b\r" });
         return false;
       }
+      // 2026-06-26 復元: claude のマウスモード中は xterm 自身の選択 (getSelection) が
+      // 空になる。代わりに Shift+ドラッグで作った OS / DOM 選択 (window.getSelection)
+      // が有効選択。両者の OR を effectiveSel として「コピー可能なテキスト」とみなす。
+      const xtermSel = terminal.getSelection();
+      const domSel = (typeof window !== "undefined" && window.getSelection)
+        ? (window.getSelection()?.toString() || "")
+        : "";
+      const effectiveSel = xtermSel || domSel;
+
       // Delegate the decision to a pure function so it stays unit-testable.
       // See src/lib/terminalUtils.ts and tests/unit/terminalUtils.test.ts.
       const decision = decideKeyAction(
@@ -320,14 +365,17 @@ export default function TerminalPane({
           isComposing: e.isComposing,
         },
         isMac,
-        terminal.hasSelection(),
+        !!effectiveSel,
       );
 
       if (decision === "copy") {
-        const sel = terminal.getSelection();
-        if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {});
+        // execCommand 主経路でコピー。preventDefault でブラウザの native copy が
+        // 上書きしないようにする。終わったら xterm/DOM の両選択をクリア。
+        e.preventDefault();
+        if (effectiveSel) {
+          copyToClipboard(effectiveSel);
           terminal.clearSelection();
+          window.getSelection()?.removeAllRanges();
         }
         return false;
       }
@@ -340,12 +388,13 @@ export default function TerminalPane({
         // firing. So just let the keydown pass through.
         return true;
       }
-      // Select + Backspace/Delete: delete selected text by sending backspaces
+      // Select + Backspace/Delete: delete selected text by sending backspaces.
+      // effectiveSel ベースで判定するので Shift+ドラッグ選択でも動く。
       if (e.key === "Backspace" || e.key === "Delete") {
-        const sel = terminal.getSelection();
-        if (sel && sel.length > 0) {
+        if (effectiveSel && effectiveSel.length > 0) {
           terminal.clearSelection();
-          const backspaces = "\x7f".repeat(sel.length);
+          window.getSelection()?.removeAllRanges();
+          const backspaces = "\x7f".repeat(effectiveSel.length);
           wsSend({ type: "write", id: sessionId, data: backspaces });
           return false;
         }
@@ -521,14 +570,22 @@ export default function TerminalPane({
       e.preventDefault();
       e.stopPropagation();
       if (!alive) return;
-      const action = decideRightClick(terminal.hasSelection());
+      // 2026-06-26 復元: 右クリックも effectiveSel 経由で xterm 選択 + DOM 選択を統合判定。
+      const xtermSel2 = terminal.getSelection();
+      const domSel2 = (typeof window !== "undefined" && window.getSelection)
+        ? (window.getSelection()?.toString() || "")
+        : "";
+      const effectiveSel2 = xtermSel2 || domSel2;
+      const action = decideRightClick(!!effectiveSel2);
       if (action === "copy") {
-        const sel = terminal.getSelection();
-        if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {});
+        if (effectiveSel2) {
+          copyToClipboard(effectiveSel2);
           terminal.clearSelection();
+          window.getSelection()?.removeAllRanges();
         }
-      } else {
+      } else if (navigator.clipboard?.readText) {
+        // 右クリック paste は async clipboard API 必須 (secure context + 権限)。
+        // 使えない環境では Ctrl/Cmd+V (handlePaste 経由) で代替。
         navigator.clipboard
           .readText()
           .then((text) => {
