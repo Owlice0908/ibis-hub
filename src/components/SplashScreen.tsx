@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
-import logoUrl from "../assets/logo.png";
+// 2026-06-26 ChatGPT 生成のトキ専用 1024×1024 透過 PNG に差し替え。
+// 解像度向上に合わせて PARTICLE_COUNT も 320→600 に増量(下記定数参照)。
+import logoUrl from "../assets/toki-ibis-splash-transparent-1024.png";
 
 // --------------------------------------------------------------------
 // 画像から不透明ピクセル座標を収集し、count 個をランダムサンプリングして返す。
@@ -76,7 +78,8 @@ interface BurstParticle {
 }
 
 const DURATION = 5000;
-const PARTICLE_COUNT = 320;
+// 高解像度 1024×1024 画像に合わせて粒子数を増量(粗くなる対策)。
+const PARTICLE_COUNT = 600;
 
 const PHASE = {
   STARS: 0,
