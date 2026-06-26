@@ -1,7 +1,7 @@
 import { WebSocketServer } from "ws";
 import { createServer } from "http";
 import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, openSync, readSync, closeSync, renameSync } from "fs";
-import { join, extname } from "path";
+import { join, extname, resolve as pathResolve, sep as pathSep } from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
 import { homedir, tmpdir, platform } from "os";
@@ -182,15 +182,66 @@ const MIME_TYPES = {
   ".js": "application/javascript",
   ".css": "text/css",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".ttf": "font/ttf",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
   ".json": "application/json",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".csv": "text/csv",
 };
 
+// ローカルファイルをブラウザに配信するエンドポイント (2026-06-26 追加):
+//   xterm 上の画像パスをクリックでプレビューできるようにする。
+//   セキュリティ: 許可拡張子のホワイトリスト + path traversal 防止のため
+//   path.resolve で正規化、ホームディレクトリ配下のみ許可 (ホスト全体ではない)。
+const ALLOWED_FILE_EXT = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
+  ".pdf", ".txt", ".md", ".json", ".csv",
+]);
+function handleFileRequest(req, res) {
+  try {
+    const url = new URL(req.url, "http://localhost");
+    const raw = url.searchParams.get("path");
+    if (!raw) { res.writeHead(400); res.end("missing path"); return; }
+    const decoded = decodeURIComponent(raw);
+    // pathResolve で正規化(.. などを潰して絶対パスに)
+    const abs = pathResolve(decoded);
+    // 許可ルート: ユーザーのホームディレクトリ配下のみ
+    const home = homedir();
+    if (!abs.startsWith(home + pathSep) && abs !== home) {
+      res.writeHead(403); res.end("forbidden path"); return;
+    }
+    const ext = extname(abs).toLowerCase();
+    if (!ALLOWED_FILE_EXT.has(ext)) {
+      res.writeHead(403); res.end("forbidden extension"); return;
+    }
+    if (!existsSync(abs) || !statSync(abs).isFile()) {
+      res.writeHead(404); res.end("not found"); return;
+    }
+    const contentType = MIME_TYPES[ext] || "application/octet-stream";
+    const data = readFileSync(abs);
+    const header = contentType.startsWith("text/") ? `${contentType}; charset=utf-8` : contentType;
+    res.writeHead(200, { "Content-Type": header, "Cache-Control": "no-cache" });
+    res.end(data);
+  } catch (e) {
+    res.writeHead(500); res.end(`error: ${e.message}`);
+  }
+}
+
 const httpServer = createServer((req, res) => {
+  // /file?path=<absolute> はローカルファイル配信専用エンドポイント
+  if (req.url && req.url.startsWith("/file?")) {
+    return handleFileRequest(req, res);
+  }
   let filePath = join(DIST_DIR, req.url === "/" ? "index.html" : req.url);
   if (!filePath.startsWith(DIST_DIR)) {
     res.writeHead(403);

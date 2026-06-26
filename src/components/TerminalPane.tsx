@@ -326,6 +326,23 @@ export default function TerminalPane({
         requestAnimationFrame(() => searchInputRef.current?.focus());
         return false;
       }
+      // 2026-06-26 Esc 単独で入力中断:
+      //   現状の Esc は xterm.js のデフォルトで \x1b として PTY に流れるが、
+      //   それだけだと claude/codex の「行クリア」が確実に発火しないため、
+      //   \x1b の直後に \x15 (Ctrl+U / unix-line-discard) も送って readline の
+      //   「カーソル前の入力をクリア」を強制発火させる。応答 streaming 中の
+      //   Esc は claude/codex 側が \x1b 単独受信で中断するので、Ctrl+U が
+      //   余計に送られても入力プロンプトに戻ったタイミングで no-op になる。
+      if (
+        e.type === "keydown" &&
+        e.key === "Escape" &&
+        !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey &&
+        !e.isComposing
+      ) {
+        e.preventDefault();
+        wsSend({ type: "write", id: sessionId, data: "\x1b\x15" });
+        return false;
+      }
       // Shift+Enter → insert a newline instead of submitting. Sends ESC+CR,
       // the same sequence Claude Code's `/terminal-setup` installs; Claude and
       // codex both read it as "newline, don't send". Lets you write multi-line
@@ -410,6 +427,72 @@ export default function TerminalPane({
     terminal.loadAddon(webLinksAddon);
     terminal.loadAddon(unicode11Addon);
     terminal.loadAddon(searchAddon);
+
+    // 2026-06-26 ローカルファイルパスをリンク化:
+    //   ChatGPT(codex)が画像を生成して `/home/.../foo.png` のようなパスを
+    //   出力した時、xterm 上でクリック可能にする。サーバ側に /file?path= で
+    //   ホーム配下のファイル配信エンドポイントを追加してあるので、リンク
+    //   クリック時に新タブで開くだけでブラウザがプレビュー表示する。
+    const FILE_PATH_RE =
+      /((?:\/|~\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|svg|pdf|md|txt|csv|json))/gi;
+    const localFileLinkProvider = terminal.registerLinkProvider({
+      provideLinks(bufferLineNumber, callback) {
+        try {
+          const buf = terminal.buffer.active;
+          const line = buf.getLine(bufferLineNumber - 1);
+          if (!line) { callback(undefined); return; }
+          // wrapped 行も含めて 1 論理行をまとめて取り出す
+          let text = line.translateToString(true);
+          // 折り返し行を結合
+          let nextLine = buf.getLine(bufferLineNumber);
+          while (nextLine && nextLine.isWrapped) {
+            text += nextLine.translateToString(true);
+            nextLine = buf.getLine((nextLine as any).lineNumber + 1);
+          }
+          const links: any[] = [];
+          FILE_PATH_RE.lastIndex = 0;
+          let m: RegExpExecArray | null;
+          while ((m = FILE_PATH_RE.exec(text)) !== null) {
+            let pathStr = m[1];
+            // チルダ展開: ~/ → /home/<user>/
+            // ブラウザ側では HOME を知らないので、サーバ側の /file?path= が
+            // 正規化してくれる前提でそのまま渡してもよいが、ここでは安全のため
+            // クリック時に展開する設計にする(下記 activate 内)。
+            const start = m.index;
+            const end = start + pathStr.length;
+            // xterm の link 座標は 1-indexed col/row
+            links.push({
+              range: {
+                start: { x: start + 1, y: bufferLineNumber },
+                end: { x: end, y: bufferLineNumber },
+              },
+              text: pathStr,
+              activate(_event: MouseEvent, uri: string) {
+                // ~/ で始まるなら $HOME に展開。サーバ側で再度正規化される。
+                let absPath = uri;
+                if (absPath.startsWith("~/")) {
+                  // HOME を取得できないので、サーバ側に渡して resolve させる方針:
+                  // ホームディレクトリ判定はサーバ側で行うので、~/ を含むパスは
+                  // 暫定的にそのまま渡す(サーバ側で path.resolve すれば
+                  // /home/<user>/.../ に展開はされないので、別経路として
+                  // process.env.HOME の取り扱いはサーバ側で必要。ここでは
+                  // 簡易対応として、まずは絶対パスのみリンク化対象とする)
+                  // → ~/ で始まるリンクは諦めて何もしない (絶対パスのみ対応)
+                  return;
+                }
+                const url = `/file?path=${encodeURIComponent(absPath)}`;
+                window.open(url, "_blank", "noopener,noreferrer");
+              },
+              hover() {/* no-op */},
+              leave() {/* no-op */},
+            });
+          }
+          callback(links.length ? links : undefined);
+        } catch {
+          callback(undefined);
+        }
+      },
+    });
     // Plain Unicode 11 widths (East-Asian-Ambiguous = 1 column) — the same
     // wcwidth the CLIs inside (Claude Code / codex) use to position the cursor
     // and erase lines. Matching them avoids the cursor-drift that left ghost
@@ -699,6 +782,7 @@ export default function TerminalPane({
       document.removeEventListener("mousedown", handleAltClick, true);
       window.removeEventListener("ibis-clear-all", clearHandler);
       termContainerForWheel?.removeEventListener("wheel", handleShiftWheel, true);
+      try { localFileLinkProvider.dispose(); } catch {}
       bellSub.dispose();
       onData.dispose();
       unsubscribe();
