@@ -1,30 +1,43 @@
 import { useEffect, useRef } from "react";
+import logoUrl from "../assets/logo.png";
 
-const PATHS = [
-  "M 72 118 C 68 100, 62 78, 70 58 C 78 38, 100 22, 128 18",
-  "M 68 126 C 62 110, 58 90, 68 72 C 78 54, 100 42, 136 38",
-  "M 64 134 C 58 120, 56 102, 68 86 C 80 70, 106 58, 142 56",
-  "M 60 140 C 56 128, 58 114, 72 100 C 86 86, 114 76, 148 74",
-  "M 60 140 C 80 130, 110 108, 132 96 C 154 84, 170 78, 182 82",
-  "M 60 140 C 74 142, 100 138, 126 128 C 152 118, 170 104, 180 90",
-  "M 60 140 C 52 148, 40 158, 28 164 C 16 170, 10 168, 14 160",
-  "M 60 140 C 50 152, 36 166, 22 176 C 8 186, 4 184, 10 174",
-];
+// --------------------------------------------------------------------
+// 画像から不透明ピクセル座標を収集し、count 個をランダムサンプリングして返す。
+// step=2 で 1/4 にデシメート(走査速度 ↑、サンプリング後の粒子分布は均等のまま)。
+// --------------------------------------------------------------------
+function sampleImagePoints(
+  img: HTMLImageElement,
+  count: number,
+  alphaThreshold = 128,
+): { x: number; y: number }[] {
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return [];
+  ctx.drawImage(img, 0, 0);
+  const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
 
-function samplePath(pathStr: string, count: number): { x: number; y: number }[] {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", pathStr);
-  svg.appendChild(path);
-  document.body.appendChild(svg);
-  const len = path.getTotalLength();
-  const points: { x: number; y: number }[] = [];
-  for (let i = 0; i < count; i++) {
-    const pt = path.getPointAtLength((i / (count - 1)) * len);
-    points.push({ x: pt.x, y: pt.y });
+  const opaque: { x: number; y: number }[] = [];
+  const step = 2;
+  for (let y = 0; y < canvas.height; y += step) {
+    for (let x = 0; x < canvas.width; x += step) {
+      const idx = (y * canvas.width + x) * 4;
+      if (data[idx + 3] > alphaThreshold) {
+        opaque.push({ x, y });
+      }
+    }
   }
-  document.body.removeChild(svg);
-  return points;
+
+  if (opaque.length === 0) return [];
+  // Fisher-Yates でユニーク抽出(同一ピクセルに重ねないため)
+  const arr = opaque.slice();
+  const n = Math.min(count, arr.length);
+  for (let i = 0; i < n; i++) {
+    const j = i + Math.floor(Math.random() * (arr.length - i));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.slice(0, n);
 }
 
 interface Star {
@@ -63,6 +76,7 @@ interface BurstParticle {
 }
 
 const DURATION = 5000;
+const PARTICLE_COUNT = 320;
 
 const PHASE = {
   STARS: 0,
@@ -83,7 +97,8 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d")!;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
     const W = window.innerWidth;
@@ -96,9 +111,6 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
 
     const cx = W / 2;
     const cy = H / 2 - 20;
-    const logoScale = Math.min(W, H) * 0.004;
-    const logoOffsetX = cx - 100 * logoScale;
-    const logoOffsetY = cy - 100 * logoScale;
 
     const stars: Star[] = [];
     for (let i = 0; i < 200; i++) {
@@ -112,33 +124,52 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
       });
     }
 
-    const logoParticles: LogoParticle[] = [];
-    const particlesPerPath = 25;
-    PATHS.forEach((pathStr, pathIdx) => {
-      const pts = samplePath(pathStr, particlesPerPath);
-      pts.forEach((pt, ptIdx) => {
+    // ロゴ画像のロードと粒子生成は非同期。ロード前は星空だけ表示する。
+    let logoParticles: LogoParticle[] = [];
+    let logoImg: HTMLImageElement | null = null;
+    let logoDisplaySize = 0;
+    let logoOffsetX = 0;
+    let logoOffsetY = 0;
+    let logoScaleFactor = 1;
+
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      logoImg = img;
+      const points = sampleImagePoints(img, PARTICLE_COUNT);
+      // 画像を画面短辺の 32% に納まるスケールで中央配置
+      const targetBox = Math.min(W, H) * 0.32;
+      const baseSide = Math.max(img.naturalWidth, img.naturalHeight);
+      const scale = targetBox / baseSide;
+      logoScaleFactor = scale;
+      logoDisplaySize = baseSide * scale;
+      logoOffsetX = cx - (img.naturalWidth * scale) / 2;
+      logoOffsetY = cy - (img.naturalHeight * scale) / 2;
+
+      logoParticles = points.map((pt, idx) => {
         const angle = Math.random() * Math.PI * 2;
         const dist = 300 + Math.random() * 400;
         const ox = cx + Math.cos(angle) * dist;
         const oy = cy + Math.sin(angle) * dist;
-        const tx = logoOffsetX + pt.x * logoScale;
-        const ty = logoOffsetY + pt.y * logoScale;
-        logoParticles.push({
+        const tx = logoOffsetX + pt.x * scale;
+        const ty = logoOffsetY + pt.y * scale;
+        return {
           targetX: tx,
           targetY: ty,
           x: ox,
           y: oy,
           originX: ox,
           originY: oy,
-          size: 1.2 + Math.random() * 1.8,
-          hue: 190 + pathIdx * 5 + Math.random() * 10,
-          delay: pathIdx * 0.06 + (ptIdx / particlesPerPath) * 0.04,
+          size: 1.0 + Math.random() * 1.5,
+          hue: 190 + Math.random() * 25,
+          delay: (idx / points.length) * 0.35 + Math.random() * 0.05,
           arrived: false,
           trailX: [],
           trailY: [],
-        });
+        };
       });
-    });
+    };
+    img.src = logoUrl;
 
     const burstParticles: BurstParticle[] = [];
 
@@ -150,7 +181,6 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
 
     const easeInOut = (t: number) =>
       t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-
     const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
 
     function render(now: number) {
@@ -162,22 +192,19 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         }
         return;
       }
+      if (!ctx) return;
 
       ctx.fillStyle = "#0b0e11";
       ctx.fillRect(0, 0, W, H);
 
+      // ── 星空(常時) ─────────────────────────────────────
       const starAlpha = Math.min(1, elapsed / 800);
       stars.forEach((s) => {
         const twinkle =
-          0.5 +
-          0.5 *
-            Math.sin(
-              elapsed * 0.001 * s.twinkleSpeed + s.twinkleOffset
-            );
+          0.5 + 0.5 * Math.sin(elapsed * 0.001 * s.twinkleSpeed + s.twinkleOffset);
         const a = s.brightness * twinkle * starAlpha;
         if (elapsed > PHASE.HOLD_END) {
-          const fadeProgress =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          const fadeProgress = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
           ctx.globalAlpha = a * (1 - fadeProgress);
         } else {
           ctx.globalAlpha = a;
@@ -189,19 +216,25 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
       });
       ctx.globalAlpha = 1;
 
+      // 画像ロード完了前は粒子フェーズに進まない(星空だけ)
+      if (logoParticles.length === 0) {
+        animId = requestAnimationFrame(render);
+        return;
+      }
+
       const convergeProgress = Math.max(
         0,
         Math.min(
           1,
-          (elapsed - PHASE.CONVERGE_START) /
-            (PHASE.CONVERGE_END - PHASE.CONVERGE_START)
-        )
+          (elapsed - PHASE.CONVERGE_START) / (PHASE.CONVERGE_END - PHASE.CONVERGE_START),
+        ),
       );
 
+      // ── 粒子: 周囲 → ロゴ形 ──────────────────────────────
       logoParticles.forEach((p) => {
         const adjustedProgress = Math.max(
           0,
-          Math.min(1, (convergeProgress - p.delay) / (1 - p.delay))
+          Math.min(1, (convergeProgress - p.delay) / (1 - p.delay)),
         );
         const eased = easeInOut(adjustedProgress);
 
@@ -231,18 +264,13 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         if (p.arrived) {
           const glowT = Math.max(
             0,
-            Math.min(
-              1,
-              (elapsed - PHASE.CONVERGE_END) /
-                (PHASE.GLOW_PEAK - PHASE.CONVERGE_END)
-            )
+            Math.min(1, (elapsed - PHASE.CONVERGE_END) / (PHASE.GLOW_PEAK - PHASE.CONVERGE_END)),
           );
           alpha = 0.8 + glowT * 0.2;
         }
 
         if (elapsed > PHASE.HOLD_END) {
-          const fadeT =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
           alpha *= 1 - fadeT;
         }
 
@@ -263,69 +291,48 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
 
       const allArrived = convergeProgress >= 1;
 
-      if (allArrived) {
+      // ── ロゴ画像本体 + グロー(粒子が集まった後) ──────────
+      if (allArrived && logoImg) {
         const glowT = Math.max(
           0,
-          Math.min(
-            1,
-            (elapsed - PHASE.CONVERGE_END) /
-              (PHASE.GLOW_PEAK - PHASE.CONVERGE_END)
-          )
+          Math.min(1, (elapsed - PHASE.CONVERGE_END) / (PHASE.GLOW_PEAK - PHASE.CONVERGE_END)),
         );
         const glowEased = easeOut(glowT);
 
-        let glowAlpha = glowEased * 0.25;
+        let glowAlpha = glowEased * 0.3;
         if (elapsed > PHASE.HOLD_END) {
-          const fadeT =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
           glowAlpha *= 1 - fadeT;
         }
 
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 180 * logoScale);
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, logoDisplaySize * 0.9);
         grad.addColorStop(0, `rgba(100, 180, 220, ${glowAlpha})`);
         grad.addColorStop(0.5, `rgba(100, 180, 220, ${glowAlpha * 0.3})`);
         grad.addColorStop(1, "transparent");
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, W, H);
 
-        const offscreen = document.createElement("canvas");
-        offscreen.width = 200 * logoScale * dpr;
-        offscreen.height = 200 * logoScale * dpr;
-        const octx = offscreen.getContext("2d")!;
-        octx.scale(dpr, dpr);
-        octx.scale(logoScale, logoScale);
-        octx.strokeStyle = `rgba(100, 180, 220, ${glowEased * 0.4})`;
-        octx.lineWidth = 3;
-        octx.lineCap = "round";
-        octx.lineJoin = "round";
-
-        PATHS.forEach((pathStr) => {
-          const p2d = new Path2D(pathStr);
-          octx.stroke(p2d);
-        });
-
-        let lineAlpha = glowEased * 0.4;
+        let iconAlpha = glowEased;
         if (elapsed > PHASE.HOLD_END) {
-          const fadeT =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
-          lineAlpha *= 1 - fadeT;
+          const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          iconAlpha *= 1 - fadeT;
         }
-        ctx.globalAlpha = lineAlpha > 0 ? lineAlpha / (glowEased * 0.4 || 1) : 0;
-        ctx.drawImage(
-          offscreen,
-          logoOffsetX,
-          logoOffsetY,
-          200 * logoScale,
-          200 * logoScale
-        );
-        ctx.globalAlpha = 1;
+        if (iconAlpha > 0) {
+          ctx.save();
+          ctx.globalAlpha = iconAlpha;
+          ctx.drawImage(
+            logoImg,
+            logoOffsetX,
+            logoOffsetY,
+            logoImg.naturalWidth * logoScaleFactor,
+            logoImg.naturalHeight * logoScaleFactor,
+          );
+          ctx.restore();
+        }
       }
 
-      if (
-        elapsed >= PHASE.BURST &&
-        elapsed < PHASE.BURST + 200 &&
-        burstParticles.length < 60
-      ) {
+      // ── バースト(中心から弾ける装飾粒子) ─────────────────
+      if (elapsed >= PHASE.BURST && elapsed < PHASE.BURST + 200 && burstParticles.length < 60) {
         for (let i = 0; i < 5; i++) {
           const angle = Math.random() * Math.PI * 2;
           const speed = 2 + Math.random() * 5;
@@ -356,8 +363,7 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         const prog = bp.life / bp.maxLife;
         let a = prog < 0.2 ? prog / 0.2 : 1 - (prog - 0.2) / 0.8;
         if (elapsed > PHASE.HOLD_END) {
-          const fadeT =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
           a *= 1 - fadeT;
         }
         ctx.beginPath();
@@ -370,19 +376,16 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         ctx.fill();
       }
 
+      // ── テキスト ─────────────────────────────────────
       const textProgress = Math.max(
         0,
-        Math.min(
-          1,
-          (elapsed - PHASE.TEXT_START) / (PHASE.TEXT_DONE - PHASE.TEXT_START)
-        )
+        Math.min(1, (elapsed - PHASE.TEXT_START) / (PHASE.TEXT_DONE - PHASE.TEXT_START)),
       );
 
       if (textProgress > 0) {
         let textAlpha = easeOut(textProgress);
         if (elapsed > PHASE.HOLD_END) {
-          const fadeT =
-            (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+          const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
           textAlpha *= 1 - fadeT;
         }
 
@@ -390,9 +393,8 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
 
-        const textY = cy + 110 * logoScale;
-        ctx.font = `300 ${22}px 'Inter', -apple-system, sans-serif`;
-        ctx.letterSpacing = "8px";
+        const textY = cy + logoDisplaySize * 0.6 + 20;
+        ctx.font = `300 22px 'Inter', -apple-system, sans-serif`;
 
         const chars = textStr.split("");
         const charWidth = 30;
@@ -400,16 +402,11 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         const startX = cx - totalWidth / 2 + charWidth / 2;
 
         chars.forEach((char, i) => {
-          const charProgress = Math.max(
-            0,
-            Math.min(1, (textProgress - i * 0.08) / 0.4)
-          );
+          const charProgress = Math.max(0, Math.min(1, (textProgress - i * 0.08) / 0.4));
           const charEased = easeOut(charProgress);
           const charAlpha = charEased * textAlpha;
           const charY = textY + (1 - charEased) * 15;
-
           if (charAlpha <= 0) return;
-
           ctx.globalAlpha = charAlpha;
           ctx.fillStyle = "#7ab0c8";
           ctx.shadowColor = "rgba(100,180,220,0.5)";
@@ -423,8 +420,7 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         if (subProgress > 0) {
           const subAlpha = easeOut(Math.min(1, subProgress)) * textAlpha * 0.35;
           ctx.globalAlpha = subAlpha;
-          ctx.font = `300 ${10}px 'Inter', -apple-system, sans-serif`;
-          ctx.letterSpacing = "4px";
+          ctx.font = `300 10px 'Inter', -apple-system, sans-serif`;
           ctx.fillStyle = "#7ab0c8";
           ctx.fillText(subText, cx, textY + 28);
         }
@@ -432,9 +428,9 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
         ctx.restore();
       }
 
+      // ── 全体フェード ────────────────────────────────────
       if (elapsed > PHASE.HOLD_END) {
-        const fadeT =
-          (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
+        const fadeT = (elapsed - PHASE.HOLD_END) / (PHASE.FADE_END - PHASE.HOLD_END);
         ctx.fillStyle = `rgba(11, 14, 17, ${easeOut(fadeT)})`;
         ctx.fillRect(0, 0, W, H);
       }
