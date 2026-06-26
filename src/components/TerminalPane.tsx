@@ -326,7 +326,10 @@ export default function TerminalPane({
       if (decision === "copy") {
         const sel = terminal.getSelection();
         if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {});
+          // doCopy はこの useEffect の後段で初期化されるが、キー押下時には
+          // 既に初期化済み(クロージャ越しの遅延参照)。Win Chromium で
+          // writeText が拒否された場合の execCommand フォールバックも含む。
+          doCopy(sel);
           terminal.clearSelection();
         }
         return false;
@@ -514,6 +517,63 @@ export default function TerminalPane({
     };
     window.addEventListener("ibis-clear-all", clearHandler);
 
+    // ────────────────────────────────────────────────────────────────────
+    // クリップボード API の Win Chromium 対策(2026-06-26):
+    //   制作元は Mac WebKit で動作確認したが、Win Chromium は
+    //   `navigator.clipboard.readText()` が Document focus 無しで reject、
+    //   `writeText()` も user gesture を厳しく要求する。失敗を握りつぶすと
+    //   「動かない」だけがユーザーに残るので、フォールバックを足す。
+    // ────────────────────────────────────────────────────────────────────
+    const fallbackCopy = (text: string): boolean => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        ta.style.top = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok;
+      } catch {
+        return false;
+      }
+    };
+    const doCopy = (sel: string) => {
+      if (!sel) return;
+      navigator.clipboard.writeText(sel).then(
+        () => {
+          // success — nothing to do
+        },
+        (err) => {
+          console.warn("[ibis-hub] clipboard.writeText failed, trying fallback:", err);
+          const ok = fallbackCopy(sel);
+          if (!ok) {
+            console.warn("[ibis-hub] fallback copy via execCommand also failed");
+          }
+        },
+      );
+    };
+    const doPaste = () => {
+      navigator.clipboard.readText().then(
+        (text) => {
+          if (alive && text) wsSend({ type: "write", id: sessionId, data: text });
+        },
+        (err) => {
+          console.warn("[ibis-hub] clipboard.readText failed:", err);
+          // Win Chromium 失敗時のフォールバック: xterm の textarea にフォーカスして
+          // ユーザーが Ctrl+V で直接ペーストできるようにする(handlePaste 経由で送信される)。
+          try {
+            terminal.focus();
+            const ta = terminal.element?.querySelector("textarea") as HTMLTextAreaElement | null;
+            ta?.focus();
+          } catch {}
+        },
+      );
+    };
+
     // Right-click: Windows Terminal style smart copy/paste.
     // The copy-vs-paste decision is delegated to the unit-tested
     // `decideRightClick` pure function so test and production stay in sync.
@@ -525,16 +585,11 @@ export default function TerminalPane({
       if (action === "copy") {
         const sel = terminal.getSelection();
         if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {});
+          doCopy(sel);
           terminal.clearSelection();
         }
       } else {
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (alive) wsSend({ type: "write", id: sessionId, data: text });
-          })
-          .catch(() => {});
+        doPaste();
       }
     };
     const containerEl = termRef.current;
