@@ -433,8 +433,10 @@ export default function TerminalPane({
     //   出力した時、xterm 上でクリック可能にする。サーバ側に /file?path= で
     //   ホーム配下のファイル配信エンドポイントを追加してあるので、リンク
     //   クリック時に新タブで開くだけでブラウザがプレビュー表示する。
+    // 2026-06-26 security review 反映: .svg / .json / .md / .txt / .csv は外す
+    // (SVG XSS リスク、機密ファイル漏洩リスク)。画像 + PDF のみリンク化対象に。
     const FILE_PATH_RE =
-      /((?:\/|~\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|svg|pdf|md|txt|csv|json))/gi;
+      /((?:\/|~\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
     const localFileLinkProvider = terminal.registerLinkProvider({
       provideLinks(bufferLineNumber, callback) {
         try {

@@ -1,6 +1,6 @@
 import { WebSocketServer } from "ws";
 import { createServer } from "http";
-import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, openSync, readSync, closeSync, renameSync } from "fs";
+import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, openSync, readSync, closeSync, renameSync, realpathSync } from "fs";
 import { join, extname, resolve as pathResolve, sep as pathSep } from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
@@ -199,13 +199,25 @@ const MIME_TYPES = {
   ".csv": "text/csv",
 };
 
-// ローカルファイルをブラウザに配信するエンドポイント (2026-06-26 追加):
+// ローカルファイルをブラウザに配信するエンドポイント (2026-06-26 追加 / 強化):
 //   xterm 上の画像パスをクリックでプレビューできるようにする。
-//   セキュリティ: 許可拡張子のホワイトリスト + path traversal 防止のため
-//   path.resolve で正規化、ホームディレクトリ配下のみ許可 (ホスト全体ではない)。
+//
+//   セキュリティ対策 (security review 2026-06-26 反映):
+//   ① 拡張子は **画像系のみ** に絞る (.json/.md/.txt/.csv は外す → .sessions.json
+//      や ~/.claude/projects/*.jsonl 等の機密漏洩を防ぐ)
+//   ② .svg は **削除** (SVG 内の <script> が同一 origin で実行される XSS 経路)
+//   ③ realpathSync で symlink を実体パスに展開してから封じ込めチェック
+//      (path.resolve は字面の .. 解決だけで symlink は dereference しない)
+//   ④ 機密ディレクトリ (.claude/.codex/.ssh/.git/.config/.cache) は明示的に弾く
+//   ⑤ レスポンスに nosniff + sandbox CSP を付与
 const ALLOWED_FILE_EXT = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
-  ".pdf", ".txt", ".md", ".json", ".csv",
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+  ".pdf",
+]);
+// 機密ディレクトリ: home 直下のこれらの配下はアクセス禁止
+const FORBIDDEN_DIR_NAMES = new Set([
+  ".claude", ".codex", ".ssh", ".gnupg", ".git", ".config", ".cache",
+  ".local", ".npm", ".aws", ".docker", ".kube",
 ]);
 function handleFileRequest(req, res) {
   try {
@@ -213,24 +225,42 @@ function handleFileRequest(req, res) {
     const raw = url.searchParams.get("path");
     if (!raw) { res.writeHead(400); res.end("missing path"); return; }
     const decoded = decodeURIComponent(raw);
-    // pathResolve で正規化(.. などを潰して絶対パスに)
-    const abs = pathResolve(decoded);
-    // 許可ルート: ユーザーのホームディレクトリ配下のみ
-    const home = homedir();
-    if (!abs.startsWith(home + pathSep) && abs !== home) {
+    // ① 字面正規化
+    const lexicalAbs = pathResolve(decoded);
+    if (!existsSync(lexicalAbs) || !statSync(lexicalAbs).isFile()) {
+      res.writeHead(404); res.end("not found"); return;
+    }
+    // ② 実体パスに展開 (symlink dereference) してから封じ込めチェック
+    let realAbs;
+    let homeReal;
+    try {
+      realAbs = realpathSync(lexicalAbs);
+      homeReal = realpathSync(homedir());
+    } catch {
       res.writeHead(403); res.end("forbidden path"); return;
     }
-    const ext = extname(abs).toLowerCase();
+    if (realAbs !== homeReal && !realAbs.startsWith(homeReal + pathSep)) {
+      res.writeHead(403); res.end("forbidden path"); return;
+    }
+    // ③ 機密ディレクトリの配下は弾く (~/.claude/* 等)
+    const relFromHome = realAbs.slice(homeReal.length + 1).split(pathSep);
+    if (relFromHome.length > 0 && FORBIDDEN_DIR_NAMES.has(relFromHome[0])) {
+      res.writeHead(403); res.end("forbidden directory"); return;
+    }
+    // ④ 拡張子ホワイトリスト
+    const ext = extname(realAbs).toLowerCase();
     if (!ALLOWED_FILE_EXT.has(ext)) {
       res.writeHead(403); res.end("forbidden extension"); return;
     }
-    if (!existsSync(abs) || !statSync(abs).isFile()) {
-      res.writeHead(404); res.end("not found"); return;
-    }
     const contentType = MIME_TYPES[ext] || "application/octet-stream";
-    const data = readFileSync(abs);
-    const header = contentType.startsWith("text/") ? `${contentType}; charset=utf-8` : contentType;
-    res.writeHead(200, { "Content-Type": header, "Cache-Control": "no-cache" });
+    const data = readFileSync(realAbs);
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Cache-Control": "no-cache",
+      // ⑤ MIME 推定攻撃防止 + 同 origin スクリプト実行抑制
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
+    });
     res.end(data);
   } catch (e) {
     res.writeHead(500); res.end(`error: ${e.message}`);
