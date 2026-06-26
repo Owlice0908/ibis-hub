@@ -3,7 +3,6 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import type { ThemeMode, TerminalMode, PaneRect } from "../types";
 import {
@@ -15,6 +14,37 @@ import { useNativeTerminalRect } from "../hooks/useNativeTerminalRect";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const IS_MAC = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
+
+// Copy that works even when the page lacks clipboard permission (e.g. opened via
+// a LAN/Tailscale IP, or the site's clipboard permission is blocked).
+// execCommand is synchronous and needs no permission, so it's the reliable
+// primary path; the async API is attempted too as a best-effort bonus.
+function copyToClipboard(text: string) {
+  fallbackCopy(text);
+  try {
+    if (window.isSecureContext && navigator.clipboard) {
+      navigator.clipboard.writeText(text).catch(() => {});
+    }
+  } catch { /* ignore */ }
+}
+function fallbackCopy(text: string) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    // The app sets `user-select: none` globally, which blocks the textarea from
+    // being selected (so execCommand('copy') would copy nothing). Force it on.
+    ta.style.userSelect = "text";
+    (ta.style as any).webkitUserSelect = "text";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+  } catch { /* leave clipboard unchanged */ }
+}
 
 const DARK_THEME = {
   background: "#0f0f0f",
@@ -232,6 +262,15 @@ export default function TerminalPane({
     terminal.attachCustomKeyEventHandler((e) => {
       // Delegate the decision to a pure function so it stays unit-testable.
       // See src/lib/terminalUtils.ts and tests/unit/terminalUtils.test.ts.
+      // The visible highlight may be a native DOM selection (e.g. when the app
+      // running in the pane has mouse mode on) rather than xterm's own
+      // selection. Treat either as "there is something to copy".
+      const xtermSel = terminal.getSelection();
+      const domSel = (typeof window !== "undefined" && window.getSelection)
+        ? (window.getSelection()?.toString() || "")
+        : "";
+      const effectiveSel = xtermSel || domSel;
+
       const decision = decideKeyAction(
         {
           type: e.type,
@@ -243,7 +282,7 @@ export default function TerminalPane({
           isComposing: e.isComposing,
         },
         isMac,
-        terminal.hasSelection(),
+        !!effectiveSel,
       );
 
       if (decision === "shift-direct") {
@@ -252,30 +291,31 @@ export default function TerminalPane({
         return false;
       }
       if (decision === "copy") {
-        const sel = terminal.getSelection();
-        if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {});
+        // Copy xterm's selection, or the browser's DOM selection if that's what
+        // the user actually highlighted. preventDefault stops the native copy
+        // from racing/overwriting.
+        e.preventDefault();
+        if (effectiveSel) {
+          copyToClipboard(effectiveSel);
           terminal.clearSelection();
+          window.getSelection()?.removeAllRanges();
         }
         return false;
       }
       if (decision === "paste") {
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            wsSend({ type: "write", id: sessionId, data: text });
-          })
-          .catch(() => {
-            // Clipboard access denied or unavailable — ignore silently
-          });
+        // Let the browser perform its native paste (no preventDefault here); the
+        // "paste" listener below reads clipboardData, which needs no clipboard
+        // permission. Returning false stops xterm from emitting ^V.
         return false;
       }
-      // Select + Backspace/Delete: delete selected text by sending backspaces
+      // Select + Backspace/Delete: delete selected text by sending backspaces.
+      // Use the effective selection (xterm OR the browser's DOM selection) so
+      // this still works now that drags produce a native DOM selection.
       if (e.key === "Backspace" || e.key === "Delete") {
-        const sel = terminal.getSelection();
-        if (sel && sel.length > 0) {
+        if (effectiveSel && effectiveSel.length > 0) {
           terminal.clearSelection();
-          const backspaces = "\x7f".repeat(sel.length);
+          window.getSelection()?.removeAllRanges();
+          const backspaces = "\x7f".repeat(effectiveSel.length);
           wsSend({ type: "write", id: sessionId, data: backspaces });
           return false;
         }
@@ -300,15 +340,6 @@ export default function TerminalPane({
     }
     terminal.open(termRef.current);
 
-    // GPU 描画(WebGL)で大量ログ出力時のもたつきを解消。DOM レンダラより大幅に速い。
-    // WebGL 不可環境(context 喪失含む)では dispose して xterm 既定の DOM レンダラへ自動フォールバック。
-    try {
-      const webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => webglAddon.dispose());
-      terminal.loadAddon(webglAddon);
-    } catch {
-      // WebGL 初期化不可 — DOM レンダラのまま継続(機能は維持、速度のみ既定)
-    }
 
     // Initial fit: retry until container has real dimensions (Grid layout
     // may start at width=0 and expand later, causing cols=1 → vertical text).
@@ -390,10 +421,12 @@ export default function TerminalPane({
       if (action === "copy") {
         const sel = terminal.getSelection();
         if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {});
+          copyToClipboard(sel);
           terminal.clearSelection();
         }
-      } else {
+      } else if (navigator.clipboard?.readText) {
+        // Right-click paste needs the async clipboard API (permission/secure).
+        // Where it's unavailable, use Ctrl/Cmd+V (handled by the paste listener).
         navigator.clipboard
           .readText()
           .then((text) => {
@@ -406,6 +439,21 @@ export default function TerminalPane({
     // Use capture phase so we win over any addon (e.g. WebLinksAddon) that
     // might attach a contextmenu listener on a child element.
     containerEl?.addEventListener("contextmenu", handleContextMenu, true);
+
+    // Native paste (Ctrl/Cmd+V): read the paste event's clipboardData, which
+    // works on ANY origin and needs no clipboard permission (unlike readText).
+    // Capture + stopPropagation so xterm's own paste doesn't also fire.
+    const handlePaste = (e: ClipboardEvent) => {
+      if (!alive) return;
+      const text = e.clipboardData?.getData("text");
+      if (text) {
+        e.preventDefault();
+        e.stopPropagation();
+        wsSend({ type: "write", id: sessionId, data: text });
+      }
+    };
+    containerEl?.addEventListener("paste", handlePaste, true);
+
 
     // Alt(Option)+Click: move caret to clicked position by sending arrow keys.
     // Works on Mac (Option) and Win/Linux (Alt) — both map to e.altKey.
@@ -466,6 +514,7 @@ export default function TerminalPane({
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       observer.disconnect();
       containerEl?.removeEventListener("contextmenu", handleContextMenu, true);
+      containerEl?.removeEventListener("paste", handlePaste, true);
       document.removeEventListener("mousedown", handleAltClick, true);
       onData.dispose();
       unsubscribe();
