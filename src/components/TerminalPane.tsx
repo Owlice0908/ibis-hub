@@ -680,6 +680,7 @@ export default function TerminalPane({
       containerEl?.removeEventListener("paste", handlePaste, true);
       document.removeEventListener("mousedown", handleAltClick, true);
       window.removeEventListener("ibis-clear-all", clearHandler);
+      termContainerForWheel?.removeEventListener("wheel", handleShiftWheel, true);
       bellSub.dispose();
       onData.dispose();
       unsubscribe();
