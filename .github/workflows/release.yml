@@ -56,16 +56,11 @@ jobs:
         run: npm ci
 
       # Sync version in tauri.conf.json from the git tag (strip leading 'v')
-      # MSI bundler rejects non-numeric pre-release identifiers (e.g. -preview.4),
-      # so strip everything after the first '-' for bundled version. The git tag
-      # itself keeps its full name (used by release.yml conditionals like
-      # verify-updater-chain's `-preview` skip).
       - name: Sync version from tag
         shell: bash
         run: |
-          RAW="${GITHUB_REF_NAME#v}"
-          VERSION="${RAW%%-*}"
-          echo "Tag=$GITHUB_REF_NAME → RAW=$RAW → VERSION=$VERSION (used for MSI/bundle)"
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Setting version to $VERSION"
           node -e "const f='src-tauri/tauri.conf.json';const j=JSON.parse(require('fs').readFileSync(f,'utf-8'));j.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(j,null,2)+'\n');"
           node -e "const f='package.json';const j=JSON.parse(require('fs').readFileSync(f,'utf-8'));j.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(j,null,2)+'\n');"
           # Cargo.toml: simple sed replacement of the first version line
@@ -260,9 +255,6 @@ jobs:
   # CI so we get a guarantee that auto-update will work — without needing
   # any Mac user to test it.
   verify-updater-chain:
-    # Preview ビルド(v*-preview タグ)では auto-publish しない。Draft のまま残し、
-    # オーナー(=nakamura さん)だけが GitHub Releases > Drafts から DL できるようにする。
-    if: ${{ !contains(github.ref_name, '-preview') }}
     needs: assemble-latest-json
     runs-on: ubuntu-22.04
     permissions:

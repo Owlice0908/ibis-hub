@@ -6,33 +6,66 @@
  */
 
 /**
- * Returns true if the Unicode codepoint is "East Asian Ambiguous" width and
- * should be rendered as 2 columns wide in CJK fonts. This fixes characters
- * like ①②③, ★, ◯, box drawing, etc. visually overlapping in xterm.js.
+ * Characters that MUST render as a single column (width 1), even though a CJK
+ * font might otherwise draw them double-width. These are the box-drawing and
+ * symbol glyphs that TUIs (Claude Code, codex) use to draw borders and status
+ * lines: if they go double-width the borders break apart / look dotted and the
+ * whole frame is misaligned. Checked BEFORE isAmbiguousWide.
  */
-export function isAmbiguousWide(cp: number): boolean {
+export function isForceNarrow(cp: number): boolean {
   return (
-    (cp >= 0x2460 && cp <= 0x24ff) || // Enclosed Alphanumerics: ①②③ ⓿ Ⓐ
-    (cp >= 0x2500 && cp <= 0x257f) || // Box Drawing
-    (cp >= 0x2580 && cp <= 0x259f) || // Block Elements
-    (cp >= 0x25a0 && cp <= 0x25ff) || // Geometric Shapes: ◯ ■ ▲
+    (cp >= 0x2500 && cp <= 0x257f) || // Box Drawing: ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼
+    (cp >= 0x2580 && cp <= 0x259f) || // Block Elements: ▀ █ ░ ▒ ▓
+    (cp >= 0x25a0 && cp <= 0x25ff) || // Geometric Shapes: ■ ● ▲ ◯
+    (cp >= 0x2190 && cp <= 0x21ff) || // Arrows: ← → ↑ ↓
+    (cp >= 0x2200 && cp <= 0x22ff) || // Math operators: ∀ ∃ ∈
+    (cp >= 0x2300 && cp <= 0x23ff) || // Misc technical: ⌘ ⏵ ⎵
     (cp >= 0x2600 && cp <= 0x26ff) || // Misc Symbols: ★ ☆ ☀
     (cp >= 0x2700 && cp <= 0x27bf) || // Dingbats: ✓ ✗ ✚
     (cp >= 0x2070 && cp <= 0x209f) || // Super/Subscripts
-    (cp >= 0x2150 && cp <= 0x218f) || // Number Forms: ⅓ ⅔
-    (cp >= 0x2190 && cp <= 0x21ff) || // Arrows: ← → ↑ ↓
-    (cp >= 0x2200 && cp <= 0x22ff) || // Math operators: ∀ ∃ ∈
-    (cp >= 0x2300 && cp <= 0x23ff) || // Misc technical
+    (cp >= 0x2150 && cp <= 0x218f)    // Number Forms: ⅓ ⅔
+  );
+}
+
+/**
+ * Returns true if the Unicode codepoint should be rendered as 2 columns wide so
+ * it doesn't visually overlap the next character in a CJK font. Kept narrow in
+ * the default Unicode "ambiguous = 1" handling, these specifically need width 2.
+ * Limited to enclosed alphanumerics (①②③ ⑩ ⓪) — the symbols/box-drawing that
+ * used to be here are now forced narrow via isForceNarrow().
+ */
+export function isAmbiguousWide(cp: number): boolean {
+  return cp >= 0x2460 && cp <= 0x24ff; // Enclosed Alphanumerics: ①②③ ⑩ ⓪ Ⓐ
+}
+
+/**
+ * East Asian "Wide"/"Fullwidth" codepoints that occupy 2 terminal columns —
+ * kana, kanji, Hangul, fullwidth forms, etc. This is a self-contained safety
+ * net so the CJK width provider stays correct even if it can't read xterm's
+ * built-in Unicode 11 widths: without it, a failed lookup would make EVERY
+ * kanji collapse to 1 column and the whole screen would overlap.
+ */
+export function isWideCJK(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
     (cp >= 0x2e80 && cp <= 0x2eff) || // CJK Radicals Supplement
-    (cp >= 0x3000 && cp <= 0x303f) || // CJK Symbols and Punctuation
-    cp === 0x00a7 ||
-    cp === 0x00a8 || // § ¨
-    cp === 0x00b0 ||
-    cp === 0x00b1 || // ° ±
-    cp === 0x00b4 ||
-    cp === 0x00b6 || // ´ ¶
-    cp === 0x00d7 ||
-    cp === 0x00f7 // × ÷
+    (cp >= 0x2f00 && cp <= 0x2fdf) || // Kangxi Radicals
+    (cp >= 0x3000 && cp <= 0x303f) || // CJK Symbols & Punctuation: 　 、 。 「 」
+    (cp >= 0x3040 && cp <= 0x30ff) || // Hiragana + Katakana
+    (cp >= 0x3100 && cp <= 0x312f) || // Bopomofo
+    (cp >= 0x3130 && cp <= 0x318f) || // Hangul Compatibility Jamo
+    (cp >= 0x3190 && cp <= 0x31ff) || // Kanbun, Bopomofo ext, Katakana ext
+    (cp >= 0x3200 && cp <= 0x33ff) || // Enclosed CJK, CJK Compatibility
+    (cp >= 0x3400 && cp <= 0x4dbf) || // CJK Unified Ideographs Extension A
+    (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified Ideographs (common kanji)
+    (cp >= 0xa000 && cp <= 0xa4cf) || // Yi Syllables
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul Syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK Compatibility Ideographs
+    (cp >= 0xfe30 && cp <= 0xfe4f) || // CJK Compatibility Forms
+    (cp >= 0xff00 && cp <= 0xff60) || // Fullwidth Forms (！＂…ｚ)
+    (cp >= 0xffe0 && cp <= 0xffe6) || // Fullwidth signs (￥ ￦ etc.)
+    (cp >= 0x1f300 && cp <= 0x1faff) || // Emoji & pictographs
+    (cp >= 0x20000 && cp <= 0x3fffd) // CJK Unified Ideographs Extensions B–
   );
 }
 
@@ -40,14 +73,9 @@ export function isAmbiguousWide(cp: number): boolean {
  * Decision the keyboard handler should make for a given keydown event.
  *  - "copy"         : selected text → clipboard, prevent default
  *  - "paste"        : clipboard → terminal, prevent default
- *  - "shift-direct" : Mac WebKit Shift+letter; write directly to bypass
- *                     the WebKit DOM event ordering bug where customKeyEvent
- *                     fires after onData (xterm.js issue #5374). Restricted
- *                     to A-Z only to avoid breaking Shift+Space, Shift+symbols,
- *                     dead keys, and IME interactions.
  *  - "pass"         : let xterm.js handle this event normally
  */
-export type KeyDecision = "copy" | "paste" | "shift-direct" | "pass";
+export type KeyDecision = "copy" | "paste" | "pass";
 
 export interface KeyEventLike {
   type: string;
@@ -66,24 +94,12 @@ export function decideKeyAction(
 ): KeyDecision {
   if (e.type !== "keydown") return "pass";
 
-  // Mac WebKit Shift+letter early-send to avoid first-character delay.
-  // Restricted to plain ASCII letters A-Z only:
-  // - Shift+Space, Shift+!, Shift+digit/symbol must NOT be hijacked because
-  //   xterm.js maps them to specific escape sequences.
-  // - Dead keys (e.key === "Dead") and arrow/function keys (length > 1)
-  //   are also excluded by the /^[A-Za-z]$/ test.
-  // - IME composition is excluded so Japanese input still works.
-  if (
-    isMac &&
-    !e.isComposing &&
-    !e.ctrlKey &&
-    !e.metaKey &&
-    !e.altKey &&
-    e.shiftKey &&
-    /^[A-Za-z]$/.test(e.key)
-  ) {
-    return "shift-direct";
-  }
+  // NOTE: We previously special-cased Mac Shift+letter ("shift-direct") to
+  // avoid a perceived first-character delay (#4). That hack double-emitted the
+  // character on Mac WebKit because xterm.js's onData fires BEFORE the custom
+  // key handler (xterm.js #5374), so preventDefault could not stop the first,
+  // already-sent copy. Letting Shift+letter pass through to xterm.js handles
+  // uppercase correctly and without doubling, so the special case is removed.
 
   const key = e.key.toLowerCase();
 

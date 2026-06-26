@@ -23,5 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 
-# MCP config: may contain credentials at runtime — never commit
-.mcp.json
+.sessions-data/
+
+.sessions.json

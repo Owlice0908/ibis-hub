@@ -4,16 +4,12 @@ import logoUrl from "./assets/logo.png";
 import Sidebar from "./components/Sidebar";
 import SplashScreen from "./components/SplashScreen";
 import TerminalGrid from "./components/TerminalGrid";
+import ConversationPanel, { type Conversation } from "./components/ConversationPanel";
 import { useWS } from "./useWebSocket";
 import { useTauriTransport } from "./useTauriTransport";
 import { findDropTargetSession, pathsToShellArgs } from "./lib/terminalUtils";
-import {
-  detectInitialPlatform,
-  refinePlatformFromTauri,
-  isNativeTerminalAvailable,
-  resolveTerminalMode,
-} from "./lib/environmentUtils";
-import type { Session, LayoutMode, ThemeMode, TerminalMode, PlatformInfo } from "./types";
+import { ensureNotifyPermission, notifyAttention } from "./lib/notify";
+import type { Session, LayoutMode, ThemeMode } from "./types";
 
 // Detect Tauri at module level (constant, safe for hooks)
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -31,45 +27,94 @@ const useTransport = isTauri
   ? () => useTauriTransport()
   : () => useWS(WS_URL);
 
+// User's preferred session order (set by drag-reordering in the sidebar),
+// persisted so the list keeps its order across reloads/reconnects.
+const ORDER_KEY = "ibis-session-order";
+const loadSessionOrder = (): string[] => {
+  try {
+    const raw = localStorage.getItem(ORDER_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+};
+const saveSessionOrder = (ids: string[]) => {
+  try { localStorage.setItem(ORDER_KEY, JSON.stringify(ids)); } catch {}
+};
+// Sort by the saved order; ids not in the saved list keep their relative order
+// at the end (new sessions appear after the ones you've already arranged).
+const applySavedOrder = <T,>(arr: T[], getId: (item: T) => string): T[] => {
+  const order = loadSessionOrder();
+  if (order.length === 0) return arr;
+  const rank = new Map(order.map((id, i) => [id, i]));
+  return arr
+    .map((item, i) => ({ item, i }))
+    .sort((a, b) => {
+      const ra = rank.get(getId(a.item)) ?? Number.MAX_SAFE_INTEGER;
+      const rb = rank.get(getId(b.item)) ?? Number.MAX_SAFE_INTEGER;
+      return ra === rb ? a.i - b.i : ra - rb;
+    })
+    .map((x) => x.item);
+};
+
 function App() {
   const { send, onMessage, connected } = useTransport();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionIds, setActiveSessionIds] = useState<string[]>([]);
   const [focusedSessionId, setFocusedSessionId] = useState<string | null>(null);
-  const [layout, setLayout] = useState<LayoutMode>("single");
+  // Restore the last-used layout (single/focus/grid) so the app reopens looking
+  // the way you left it, instead of always snapping back to single.
+  const [layout, setLayout] = useState<LayoutMode>(() => {
+    const saved = localStorage.getItem("ibis-layout");
+    return saved === "single" || saved === "focus" || saved === "grid"
+      ? saved
+      : "single";
+  });
+  const [gridResetSignal, setGridResetSignal] = useState(0);
   const [questionSessions, setQuestionSessions] = useState<Set<string>>(new Set());
   const [theme, setTheme] = useState<ThemeMode>(() =>
     (localStorage.getItem("ibis-theme") as ThemeMode) || "dark"
   );
   const [showSplash, setShowSplash] = useState(true);
-  // 環境判定: 起動時は navigator ベース、Tauri なら get_platform() で確定
-  const [platformInfo, setPlatformInfo] = useState<PlatformInfo>(() => detectInitialPlatform());
-  const nativeAvailable = isNativeTerminalAvailable(platformInfo);
+  const [showConversations, setShowConversations] = useState(false);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationsLoading, setConversationsLoading] = useState(false);
   const sessionCountRef = useRef(0);
   const focusedSessionIdRef = useRef<string | null>(null);
+  const sessionsRef = useRef<Session[]>([]);
 
-  // Tauri 経由で正確な OS を取得して platformInfo を確定する
-  useEffect(() => {
-    if (!isTauri) return;
-    (async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const plat = await invoke<string>("get_platform");
-        setPlatformInfo((prev) => refinePlatformFromTauri(prev, plat));
-      } catch (e) {
-        console.error("get_platform failed:", e);
-      }
-    })();
-  }, []);
-
-  // Keep ref in sync for use in message handler (avoids stale closure)
+  // Keep refs in sync for use in message handlers (avoids stale closures)
   focusedSessionIdRef.current = focusedSessionId;
+  sessionsRef.current = sessions;
+
+  // A session wants attention (asked a y/n question, or rang the bell when it
+  // finished). Flag it and — if it isn't the one you're looking at — ping you
+  // with a desktop notification + chime so you can run several at once.
+  const flagAttention = useCallback((id: string) => {
+    setQuestionSessions((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    const isForeground = id === focusedSessionIdRef.current && !document.hidden;
+    if (!isForeground) {
+      const name = sessionsRef.current.find((s) => s.id === id)?.name || "セッション";
+      notifyAttention("Ibis Hub", `${name} があなたを待っています`);
+    }
+  }, []);
 
   // Apply theme to document
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("ibis-theme", theme);
   }, [theme]);
+
+  // Remember the layout across restarts.
+  useEffect(() => {
+    localStorage.setItem("ibis-layout", layout);
+  }, [layout]);
 
   // Tauri-only: auto-update check + native drag-and-drop
   useEffect(() => {
@@ -180,14 +225,16 @@ function App() {
             setSessions((prev) => {
               const existingIds = new Set(prev.map((s) => s.id));
               const newSessions = msg.sessions.filter((s: Session) => !existingIds.has(s.id));
-              return newSessions.length > 0 ? [...prev, ...newSessions] : prev;
+              const merged = newSessions.length > 0 ? [...prev, ...newSessions] : prev;
+              return applySavedOrder(merged, (s) => s.id);
             });
             setActiveSessionIds((prev) => {
               const existing = new Set(prev);
               const newIds = msg.sessions
                 .map((s: Session) => s.id)
                 .filter((id: string) => !existing.has(id));
-              return newIds.length > 0 ? [...prev, ...newIds] : prev;
+              const merged = newIds.length > 0 ? [...prev, ...newIds] : prev;
+              return applySavedOrder(merged, (id) => id);
             });
             setFocusedSessionId((prev) => prev ?? msg.sessions[0]?.id ?? null);
             // Attach to each session to receive PTY output
@@ -196,48 +243,30 @@ function App() {
             }
           }
           break;
-        case "session_created": {
-          // 受信モードを環境で解決(ブラウザ版で "native" が来ても xterm に降格)
-          const { mode: effectiveMode } = resolveTerminalMode(
-            msg.session.terminalMode,
-            platformInfo,
-          );
-          const sessionWithMode: Session = { ...msg.session, terminalMode: effectiveMode };
+        case "conversation_list":
+          setConversations(Array.isArray(msg.conversations) ? msg.conversations : []);
+          setConversationsLoading(false);
+          break;
+        case "conversation_deleted":
+          setConversations((prev) => prev.filter((c) => c.id !== msg.id));
+          break;
+        case "conversation_delete_error":
+          alert(`削除に失敗しました: ${msg.error || "不明なエラー"}`);
+          break;
+        case "session_created":
           // Deduplicate: don't add if session already exists
           setSessions((prev) => {
-            if (prev.some((s) => s.id === sessionWithMode.id)) return prev;
-            return [...prev, sessionWithMode];
+            if (prev.some((s) => s.id === msg.session.id)) return prev;
+            return [...prev, msg.session];
           });
           setActiveSessionIds((prev) => {
-            if (prev.includes(sessionWithMode.id)) return prev;
-            return [...prev, sessionWithMode.id];
+            if (prev.includes(msg.session.id)) return prev;
+            return [...prev, msg.session.id];
           });
-          setFocusedSessionId(sessionWithMode.id);
+          setFocusedSessionId(msg.session.id);
           break;
-        }
-        case "native_terminal_error": {
-          // ネイティブ起動に失敗。該当セッションを xterm モードに降格
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === msg.paneId ? { ...s, terminalMode: "xterm" as TerminalMode } : s,
-            ),
-          );
-          console.warn(`Native terminal failed for ${msg.paneId}: ${msg.error}. Fell back to xterm.`);
-          break;
-        }
-        case "native_terminal_exited": {
-          // ユーザーが wt/Terminal.app を直接閉じた → セッション自体も閉じる
-          setSessions((prev) => prev.filter((s) => s.id !== msg.paneId));
-          setActiveSessionIds((prev) => prev.filter((sid) => sid !== msg.paneId));
-          setFocusedSessionId((prev) => (prev === msg.paneId ? null : prev));
-          break;
-        }
         case "session_question":
-          setQuestionSessions((prev) => {
-            const next = new Set(prev);
-            next.add(msg.id);
-            return next;
-          });
+          flagAttention(msg.id);
           break;
         case "session_exited":
           // Session ended naturally (e.g. user typed 'exit') — update status
@@ -275,47 +304,64 @@ function App() {
         }
       }
     });
-  }, [onMessage, send]);
+  }, [onMessage, send, flagAttention]);
 
-  const createSession = useCallback(
-    (type: "claude" | "shell" = "claude", terminalMode?: TerminalMode) => {
-      sessionCountRef.current += 1;
-      const baseName =
-        type === "claude" ? `Claude ${sessionCountRef.current}` : `Terminal ${sessionCountRef.current}`;
-      // モード自動決定(preview.10):
-      // - Tauri デスクトップ(Win/Mac) → native(wt.exe / Terminal.app をペインにオーバーレイ)
-      // - ブラウザ版                    → xterm(従来通り)
-      // C 案で HWND 取得をタイトル一致に修正したので、wt.exe オーバーレイが動く想定。
-      const effectiveMode: TerminalMode = terminalMode ?? (nativeAvailable ? "native" : "xterm");
-      send({
-        type: "create_session",
-        name: baseName,
-        session_type: type,
-        terminalMode: effectiveMode,
-      });
-    },
-    [send, nativeAvailable],
-  );
+  // Tab title badge: show how many sessions are waiting for you.
+  useEffect(() => {
+    const n = questionSessions.size;
+    document.title = n > 0 ? `(${n}) Ibis Hub` : "Ibis Hub";
+  }, [questionSessions]);
+
+  // Quick session switching: Cmd/Ctrl+1..9 jumps to the Nth session.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if (e.key < "1" || e.key > "9") return;
+      const idx = parseInt(e.key, 10) - 1;
+      const target = sessionsRef.current[idx];
+      if (target) {
+        e.preventDefault();
+        selectSession(target.id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const createSession = useCallback((type: "claude" | "shell" | "chatgpt" = "claude") => {
+    // First session creation is a user gesture — a good moment to ask for
+    // permission to send desktop notifications.
+    ensureNotifyPermission();
+    sessionCountRef.current += 1;
+    const label = type === "claude" ? "Claude" : type === "chatgpt" ? "ChatGPT" : "Terminal";
+    send({
+      type: "create_session",
+      name: `${label} ${sessionCountRef.current}`,
+      session_type: type,
+    });
+  }, [send]);
 
   const closeSession = useCallback((id: string) => {
-    // Native セッションは PTY を持たないため、close_session(PtyManager 経路)を呼ぶと
-    // "Session not found" alert が出る。terminalMode で分岐して正しい経路に流す。
-    const session = sessions.find((s) => s.id === id);
-    if (session?.terminalMode === "native") {
-      send({ type: "close_native_terminal", paneId: id });
-      // Native は session_closed イベントを返さないので、Frontend state を手動でクリーンアップ
-      setSessions((prev) => prev.filter((s) => s.id !== id));
-      setActiveSessionIds((prev) => prev.filter((sid) => sid !== id));
-      setFocusedSessionId((prev) => (prev === id ? null : prev));
-      setQuestionSessions((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    } else {
-      send({ type: "close_session", id });
-    }
-  }, [send, sessions]);
+    send({ type: "close_session", id });
+  }, [send]);
+
+  // "過去のチャット" panel: list / open / soft-delete saved conversations.
+  const openConversationsPanel = useCallback(() => {
+    setShowConversations(true);
+    setConversationsLoading(true);
+    send({ type: "list_conversations" });
+  }, [send]);
+
+  const openConversation = useCallback((id: string, title: string) => {
+    send({ type: "resume_conversation", id, name: title });
+    setShowConversations(false);
+  }, [send]);
+
+  const deleteConversations = useCallback((ids: string[]) => {
+    // Optimistically remove from the list; the server moves them to trash.
+    setConversations((prev) => prev.filter((c) => !ids.includes(c.id)));
+    for (const id of ids) send({ type: "delete_conversation", id });
+  }, [send]);
 
   const selectSession = useCallback((id: string) => {
     setQuestionSessions((prev) => {
@@ -339,10 +385,41 @@ function App() {
     send({ type: "rename_session", id, name });
   }, [send]);
 
+  // Drag-reorder in the sidebar: move `fromId` to where `toId` currently sits.
+  // Reorders the visible session list (and keeps the grid pane order in sync),
+  // then persists the new order so it survives a reload.
+  const reorderSessions = useCallback((fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    const prev = sessionsRef.current;
+    const from = prev.findIndex((s) => s.id === fromId);
+    const to = prev.findIndex((s) => s.id === toId);
+    if (from < 0 || to < 0) return;
+    const next = [...prev];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    const order = next.map((s) => s.id);
+    saveSessionOrder(order);
+    setSessions(next);
+    const rank = new Map(order.map((id, i) => [id, i]));
+    setActiveSessionIds((active) =>
+      [...active].sort(
+        (a, b) =>
+          (rank.get(a) ?? Number.MAX_SAFE_INTEGER) -
+          (rank.get(b) ?? Number.MAX_SAFE_INTEGER),
+      ),
+    );
+  }, []);
+
+  // Grid shows at most GRID_MAX panes at once — beyond that the panes get too
+  // small to be useful. Extra sessions stay running (mounted, just not shown in
+  // the grid) and can be brought in by reordering them into the first slots.
+  const GRID_MAX = 6;
   const visibleSessionIds =
     layout === "single" && focusedSessionId
       ? [focusedSessionId]
-      : activeSessionIds;
+      : layout === "grid"
+        ? activeSessionIds.slice(0, GRID_MAX)
+        : activeSessionIds;
 
   const focusedId = layout === "focus" ? focusedSessionId : null;
 
@@ -357,11 +434,26 @@ function App() {
         theme={theme}
         questionSessionIds={Array.from(questionSessions)}
         onLayoutChange={setLayout}
+        onResetGrid={() => setGridResetSignal((n) => n + 1)}
         onThemeChange={setTheme}
         onCreateSession={createSession}
         onSelectSession={selectSession}
         onCloseSession={closeSession}
         onRenameSession={renameSession}
+        onReorderSessions={reorderSessions}
+        onOpenConversations={openConversationsPanel}
+      />
+      <ConversationPanel
+        open={showConversations}
+        loading={conversationsLoading}
+        conversations={conversations}
+        onClose={() => setShowConversations(false)}
+        onOpen={openConversation}
+        onDelete={deleteConversations}
+        onNewChat={() => {
+          createSession("claude");
+          setShowConversations(false);
+        }}
       />
       <main className="flex-1 flex flex-col min-w-0">
         {visibleSessionIds.length === 0 ? (
@@ -387,6 +479,12 @@ function App() {
                   + Claude
                 </button>
                 <button
+                  onClick={() => createSession("chatgpt")}
+                  className="px-6 py-3 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors font-medium"
+                >
+                  + ChatGPT
+                </button>
+                <button
                   onClick={() => createSession("shell")}
                   className="px-6 py-3 bg-surface-hover hover:bg-border text-text rounded-lg transition-colors font-medium border border-border"
                 >
@@ -403,10 +501,12 @@ function App() {
             layout={layout}
             theme={theme}
             focusedId={focusedId}
+            gridResetSignal={gridResetSignal}
             wsSend={send}
             wsOnMessage={onMessage}
             onRemoveFromGrid={removeFromGrid}
             onCloseSession={closeSession}
+            onAttention={flagAttention}
           />
         )}
       </main>

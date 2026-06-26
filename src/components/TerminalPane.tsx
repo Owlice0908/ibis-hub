@@ -3,48 +3,17 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
-import type { ThemeMode, TerminalMode, PaneRect } from "../types";
+import type { ThemeMode } from "../types";
 import {
   decideKeyAction,
   decideRightClick,
   dndPositionToLogical,
 } from "../lib/terminalUtils";
-import { useNativeTerminalRect } from "../hooks/useNativeTerminalRect";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const IS_MAC = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
-
-// Copy that works even when the page lacks clipboard permission (e.g. opened via
-// a LAN/Tailscale IP, or the site's clipboard permission is blocked).
-// execCommand is synchronous and needs no permission, so it's the reliable
-// primary path; the async API is attempted too as a best-effort bonus.
-function copyToClipboard(text: string) {
-  fallbackCopy(text);
-  try {
-    if (window.isSecureContext && navigator.clipboard) {
-      navigator.clipboard.writeText(text).catch(() => {});
-    }
-  } catch { /* ignore */ }
-}
-function fallbackCopy(text: string) {
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.top = "-9999px";
-    // The app sets `user-select: none` globally, which blocks the textarea from
-    // being selected (so execCommand('copy') would copy nothing). Force it on.
-    ta.style.userSelect = "text";
-    (ta.style as any).webkitUserSelect = "text";
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    ta.setSelectionRange(0, text.length);
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-  } catch { /* leave clipboard unchanged */ }
-}
 
 const DARK_THEME = {
   background: "#0f0f0f",
@@ -98,13 +67,12 @@ interface TerminalPaneProps {
   showControls: boolean;
   isVisible: boolean;
   theme: ThemeMode;
-  // ペインのターミナルモード。未指定 = "xterm"(既存挙動)。
-  // "native" は Tauri Win/Mac で OS 純正端末をペイン矩形に重ねる試作モード。
-  terminalMode?: TerminalMode;
   wsSend: (msg: any) => void;
   wsOnMessage: (handler: (msg: any) => void) => () => void;
   onDetach: () => void;
   onClose: () => void;
+  /** Called when this session rings the terminal bell or otherwise wants attention. */
+  onBell?: () => void;
 }
 
 export default function TerminalPane({
@@ -113,23 +81,37 @@ export default function TerminalPane({
   showControls,
   isVisible,
   theme,
-  terminalMode = "xterm",
   wsSend,
   wsOnMessage,
   onDetach,
   onClose,
+  onBell,
 }: TerminalPaneProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const visibleRef = useRef(isVisible);
   const bufferedDataRef = useRef("");
+  const onBellRef = useRef(onBell);
+  onBellRef.current = onBell;
   const [dragOver, setDragOver] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
   const dragDepthRef = useRef(0);
   const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB
-  const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB max buffer for hidden terminals
+  // Cap buffered output for hidden panes. Kept modest so many idle background
+  // sessions don't balloon memory (a cause of the app feeling heavy).
+  const MAX_BUFFER_SIZE = 2 * 1024 * 1024; // 2MB max buffer for hidden terminals
+
+  // Renderer: we use xterm's built-in DOM renderer (no addon). In this app's
+  // WKWebView the accelerated renderers (WebGL/Canvas-beta) each broke something
+  // — stale rows after scroll, text splitting while selecting, or the box-drawing
+  // input frame not drawing — so DOM (always correct) is the right choice. Scroll
+  // cost is kept down by the reduced scrollback instead.
 
   const safeFit = useCallback((fitAddon: FitAddon, terminal: Terminal) => {
     const dims = fitAddon.proposeDimensions();
@@ -158,6 +140,25 @@ export default function TerminalPane({
       }
     }, 50);
   }, [sessionId, wsSend, safeFit]);
+
+  // Force the inner TUI (Claude / codex) to repaint its whole UI — including the
+  // white rounded input frame — by sending a REAL size change (SIGWINCH) and
+  // reverting it a moment later. After a reload/restore the frame is often drawn
+  // mid-resize and then never redrawn, so it goes missing until the user manually
+  // resizes the window. A same-size resize won't trigger a redraw, so we nudge
+  // the columns by one and back: brief, barely visible, and reliably repaints.
+  const nudgeRedraw = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const { cols, rows } = terminal;
+    if (!cols || !rows) return;
+    try {
+      wsSend({ type: "resize", id: sessionId, cols: Math.max(cols - 1, 2), rows });
+      setTimeout(() => {
+        wsSend({ type: "resize", id: sessionId, cols, rows });
+      }, 120);
+    } catch {}
+  }, [sessionId, wsSend]);
 
   // Upload dropped file to server, get path back, send to PTY
   const handleFileDrop = useCallback((files: FileList) => {
@@ -218,6 +219,9 @@ export default function TerminalPane({
         terminal.write(bufferedDataRef.current);
         bufferedDataRef.current = "";
       }
+      // Defer fit + repaint to the next frame, once the re-shown pane actually
+      // has real layout dimensions (doing it while the element is still 0×0
+      // leaves it blank).
       requestAnimationFrame(() => {
         try {
           if (fitAddonRef.current) {
@@ -227,10 +231,16 @@ export default function TerminalPane({
             }
           }
         } catch {}
+        // Force a full repaint: re-showing a hidden pane does not auto-redraw,
+        // so without this it stays blank until the next keystroke/output.
+        try { terminal.refresh(0, terminal.rows - 1); } catch {}
         terminal.scrollToBottom();
+        // The agent may have drawn its frame at a different size while hidden;
+        // nudge it to repaint at the now-visible size so the input frame is right.
+        setTimeout(nudgeRedraw, 80);
       });
     }
-  }, [isVisible]);
+  }, [isVisible, nudgeRedraw]);
 
   // Update terminal theme when theme changes
   useEffect(() => {
@@ -241,36 +251,64 @@ export default function TerminalPane({
 
   useEffect(() => {
     if (!termRef.current) return;
-    // Native モード時は xterm.js を初期化しない(ペイン枠の中身は Rust が wt.exe / Terminal.app を重ねる)
-    if (terminalMode === "native") return;
 
     const terminal = new Terminal({
       theme: theme === "dark" ? DARK_THEME : LIGHT_THEME,
-      fontFamily: "'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Source Han Mono', 'Noto Sans Mono CJK JP', 'MS Gothic', monospace",
+      // PlemolJP Console: a terminal-oriented monospace (IBM Plex based) that
+      // covers Latin + Japanese + box-drawing AND — crucially — renders
+      // East-Asian-Ambiguous characters (①②③ etc.) as HALFWIDTH. That matches
+      // the terminal/CLI treating them as 1 column, so they don't spill into the
+      // next cell, while kana/kanji stay a clean 2 columns. Installed via
+      // Homebrew (font-plemol-jp); UDEV Gothic/Menlo are metric fallbacks.
+      fontFamily: "'PlemolJP Console', 'UDEV Gothic', 'Menlo', monospace",
       fontSize: 14,
       lineHeight: 1.2,
       cursorBlink: false,
       cursorStyle: "bar",
-      scrollback: 1000,
+      // Lighter scrollback (was 1000) → fewer rows for the DOM renderer to keep
+      // and repaint, so scrolling stays snappy and memory is lower. Older
+      // output beyond this scrolls off; the on-disk scrollback still restores
+      // recent context on relaunch.
+      scrollback: 500,
       allowProposedApi: true,
       rightClickSelectsWord: false, // We handle right-click ourselves (copy/paste)
       smoothScrollDuration: 0,
+      // Default is 1 line per wheel notch, which feels sluggish on Mac
+      // trackpads. Move several lines per tick so scrolling feels responsive
+      // (hold Alt for the faster step).
+      scrollSensitivity: 3,
+      fastScrollSensitivity: 8,
     });
 
     // Copy/paste shortcuts (Ctrl+Shift+C/V for Linux/Windows, Cmd+C/V for Mac)
     const isMac = navigator.platform.toLowerCase().includes("mac");
     terminal.attachCustomKeyEventHandler((e) => {
+      // Cmd/Ctrl+F: open in-terminal search (search the scrollback).
+      if (e.type === "keydown" && (isMac ? e.metaKey : e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setShowSearch(true);
+        requestAnimationFrame(() => searchInputRef.current?.focus());
+        return false;
+      }
+      // Shift+Enter → insert a newline instead of submitting. Sends ESC+CR,
+      // the same sequence Claude Code's `/terminal-setup` installs; Claude and
+      // codex both read it as "newline, don't send". Lets you write multi-line
+      // messages without the line firing off on the first Enter.
+      if (
+        e.type === "keydown" &&
+        e.key === "Enter" &&
+        e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.isComposing
+      ) {
+        e.preventDefault();
+        wsSend({ type: "write", id: sessionId, data: "\x1b\r" });
+        return false;
+      }
       // Delegate the decision to a pure function so it stays unit-testable.
       // See src/lib/terminalUtils.ts and tests/unit/terminalUtils.test.ts.
-      // The visible highlight may be a native DOM selection (e.g. when the app
-      // running in the pane has mouse mode on) rather than xterm's own
-      // selection. Treat either as "there is something to copy".
-      const xtermSel = terminal.getSelection();
-      const domSel = (typeof window !== "undefined" && window.getSelection)
-        ? (window.getSelection()?.toString() || "")
-        : "";
-      const effectiveSel = xtermSel || domSel;
-
       const decision = decideKeyAction(
         {
           type: e.type,
@@ -282,40 +320,32 @@ export default function TerminalPane({
           isComposing: e.isComposing,
         },
         isMac,
-        !!effectiveSel,
+        terminal.hasSelection(),
       );
 
-      if (decision === "shift-direct") {
-        e.preventDefault();
-        wsSend({ type: "write", id: sessionId, data: e.key });
-        return false;
-      }
       if (decision === "copy") {
-        // Copy xterm's selection, or the browser's DOM selection if that's what
-        // the user actually highlighted. preventDefault stops the native copy
-        // from racing/overwriting.
-        e.preventDefault();
-        if (effectiveSel) {
-          copyToClipboard(effectiveSel);
+        const sel = terminal.getSelection();
+        if (sel) {
+          navigator.clipboard.writeText(sel).catch(() => {});
           terminal.clearSelection();
-          window.getSelection()?.removeAllRanges();
         }
         return false;
       }
       if (decision === "paste") {
-        // Let the browser perform its native paste (no preventDefault here); the
-        // "paste" listener below reads clipboardData, which needs no clipboard
-        // permission. Returning false stops xterm from emitting ^V.
-        return false;
+        // Do NOT paste here. A single Cmd+V produces both this keydown AND a
+        // DOM "paste" event on xterm's textarea. If we sent the clipboard here
+        // too, the text would arrive twice ("2個ペーストされる"). All pasting is
+        // funneled through the single capture-phase "paste" listener below,
+        // which sends once and stops xterm's own paste handler from also
+        // firing. So just let the keydown pass through.
+        return true;
       }
-      // Select + Backspace/Delete: delete selected text by sending backspaces.
-      // Use the effective selection (xterm OR the browser's DOM selection) so
-      // this still works now that drags produce a native DOM selection.
+      // Select + Backspace/Delete: delete selected text by sending backspaces
       if (e.key === "Backspace" || e.key === "Delete") {
-        if (effectiveSel && effectiveSel.length > 0) {
+        const sel = terminal.getSelection();
+        if (sel && sel.length > 0) {
           terminal.clearSelection();
-          window.getSelection()?.removeAllRanges();
-          const backspaces = "\x7f".repeat(effectiveSel.length);
+          const backspaces = "\x7f".repeat(sel.length);
           wsSend({ type: "write", id: sessionId, data: backspaces });
           return false;
         }
@@ -326,20 +356,34 @@ export default function TerminalPane({
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
     const unicode11Addon = new Unicode11Addon();
+    const searchAddon = new SearchAddon();
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(webLinksAddon);
     terminal.loadAddon(unicode11Addon);
+    terminal.loadAddon(searchAddon);
+    // Plain Unicode 11 widths (East-Asian-Ambiguous = 1 column) — the same
+    // wcwidth the CLIs inside (Claude Code / codex) use to position the cursor
+    // and erase lines. Matching them avoids the cursor-drift that left ghost
+    // characters in the buffer. ①②③ etc. don't overlap because the PlemolJP
+    // Console font draws ambiguous characters as halfwidth to match.
     terminal.unicode.activeVersion = "11";
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    searchAddonRef.current = searchAddon;
+
+    // The terminal bell rings when a CLI agent (Claude/codex) finishes or needs
+    // input. Surface it as an "attention" signal so the user can run several
+    // sessions and only check the one that pinged.
+    const bellSub = terminal.onBell(() => {
+      if (!visibleRef.current) onBellRef.current?.();
+    });
 
     // Clear container before opening (prevents duplicate terminals from StrictMode remounts)
     while (termRef.current.firstChild) {
       termRef.current.removeChild(termRef.current.firstChild);
     }
     terminal.open(termRef.current);
-
 
     // Initial fit: retry until container has real dimensions (Grid layout
     // may start at width=0 and expand later, causing cols=1 → vertical text).
@@ -360,9 +404,50 @@ export default function TerminalPane({
     };
     requestAnimationFrame(() => initialFit());
 
+    // The server resumes/launches the agent ~500ms after the session starts, then
+    // it draws its UI. By then the terminal size may have settled WITHOUT the
+    // agent redrawing, leaving the input frame missing. Nudge a repaint once it's
+    // up (two passes cover slow starts). Tracked so we can cancel on unmount.
+    const redrawNudges = [
+      setTimeout(nudgeRedraw, 900),
+      setTimeout(nudgeRedraw, 2200),
+    ];
+
     // Guard: when effect re-runs or cleans up, mark this instance as dead
     // so no stale closure can write to a disposed terminal
     let alive = true;
+
+    // Font-load race: at launch the terminal can render BEFORE the custom font
+    // (PlemolJP Console) is ready, so box-drawing — like Claude's input frame
+    // ("白い線") — gets measured with a fallback font and stays broken. Once the
+    // font is loaded, re-fit (cell size may change) and repaint so it's correct.
+    if (typeof document !== "undefined" && (document as any).fonts) {
+      const fonts: any = (document as any).fonts;
+      const repaintForFont = () => {
+        if (!alive) return;
+        try {
+          if (fitAddonRef.current) {
+            const r = safeFit(fitAddonRef.current, terminal);
+            if (r) wsSend({ type: "resize", id: sessionId, cols: r.cols, rows: r.rows });
+          }
+          // Force xterm to drop its cached character metrics and re-measure with
+          // the now-loaded font. A plain refresh() reuses the stale fallback-font
+          // cell size, so box-drawing — Claude's white input frame — stays broken
+          // even after the real font arrives. Reassigning fontFamily invalidates
+          // that cache; setting it back immediately means no visible flicker.
+          const ff = terminal.options.fontFamily;
+          terminal.options.fontFamily = "monospace";
+          terminal.options.fontFamily = ff;
+          terminal.refresh(0, terminal.rows - 1);
+        } catch {}
+      };
+      try { fonts.load("14px 'PlemolJP Console'").then(repaintForFont).catch(() => {}); } catch {}
+      try { fonts.ready.then(repaintForFont).catch(() => {}); } catch {}
+      // Safety net: fonts.ready can resolve a hair before the row layout settles,
+      // which still leaves the frame measured with the fallback font. One more
+      // repaint shortly after reliably catches that race.
+      setTimeout(repaintForFont, 400);
+    }
 
     // PTY output from server
     let pendingData = "";
@@ -410,6 +495,25 @@ export default function TerminalPane({
       wsSend({ type: "write", id: sessionId, data });
     });
 
+    // "Lighten everything" — drop the scrolled-off history to free memory, and
+    // redraw the current screen so any leftover/garbled characters are wiped.
+    //   • terminal.clear() drops all scrollback above the current line (the old
+    //     "toggle the scrollback option" trick did nothing in xterm 6 — that's
+    //     why the button appeared to do nothing).
+    //   • Sending Ctrl+L (\x0c) tells the program inside (shell / Claude / codex)
+    //     to clear and repaint, which is what actually removes burned-in glitch
+    //     characters from the visible screen.
+    const clearHandler = () => {
+      try {
+        terminal.clear();
+        terminal.scrollToBottom();
+        terminal.refresh(0, terminal.rows - 1);
+      } catch {}
+      wsSend({ type: "clear_scrollback", id: sessionId, keepTail: true });
+      wsSend({ type: "write", id: sessionId, data: "\x0c" });
+    };
+    window.addEventListener("ibis-clear-all", clearHandler);
+
     // Right-click: Windows Terminal style smart copy/paste.
     // The copy-vs-paste decision is delegated to the unit-tested
     // `decideRightClick` pure function so test and production stay in sync.
@@ -421,12 +525,10 @@ export default function TerminalPane({
       if (action === "copy") {
         const sel = terminal.getSelection();
         if (sel) {
-          copyToClipboard(sel);
+          navigator.clipboard.writeText(sel).catch(() => {});
           terminal.clearSelection();
         }
-      } else if (navigator.clipboard?.readText) {
-        // Right-click paste needs the async clipboard API (permission/secure).
-        // Where it's unavailable, use Ctrl/Cmd+V (handled by the paste listener).
+      } else {
         navigator.clipboard
           .readText()
           .then((text) => {
@@ -440,20 +542,23 @@ export default function TerminalPane({
     // might attach a contextmenu listener on a child element.
     containerEl?.addEventListener("contextmenu", handleContextMenu, true);
 
-    // Native paste (Ctrl/Cmd+V): read the paste event's clipboardData, which
-    // works on ANY origin and needs no clipboard permission (unlike readText).
-    // Capture + stopPropagation so xterm's own paste doesn't also fire.
+    // Single owner for ALL pasting. A Cmd+V / Ctrl+Shift+V fires a DOM "paste"
+    // event on xterm's hidden textarea; xterm has its own listener on that
+    // textarea that would emit the text through onData. To guarantee the
+    // pasted text is sent exactly ONCE (the "2個ペーストされる" bug), we catch
+    // the paste in the capture phase on the container — which runs before the
+    // textarea's own listener — send it ourselves, and stop propagation so
+    // xterm never also handles it.
     const handlePaste = (e: ClipboardEvent) => {
       if (!alive) return;
       const text = e.clipboardData?.getData("text");
       if (text) {
         e.preventDefault();
-        e.stopPropagation();
+        e.stopImmediatePropagation();
         wsSend({ type: "write", id: sessionId, data: text });
       }
     };
     containerEl?.addEventListener("paste", handlePaste, true);
-
 
     // Alt(Option)+Click: move caret to clicked position by sending arrow keys.
     // Works on Mac (Option) and Win/Linux (Alt) — both map to e.altKey.
@@ -511,71 +616,28 @@ export default function TerminalPane({
 
     return () => {
       alive = false;
+      redrawNudges.forEach(clearTimeout);
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       observer.disconnect();
       containerEl?.removeEventListener("contextmenu", handleContextMenu, true);
       containerEl?.removeEventListener("paste", handlePaste, true);
       document.removeEventListener("mousedown", handleAltClick, true);
+      window.removeEventListener("ibis-clear-all", clearHandler);
+      bellSub.dispose();
       onData.dispose();
       unsubscribe();
+      searchAddonRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [sessionId, handleResize, wsSend, wsOnMessage, terminalMode]);
-
-  // ────────────────────────────────────────────────────────────────
-  // ネイティブ端末オーバーレイ(Preview): Tauri Win/Mac でのみ動作。
-  // Rust 側で wt.exe / Terminal.app を起動し、ペイン矩形に常時最前面で重ねる。
-  // ────────────────────────────────────────────────────────────────
-  const isNativeMode = terminalMode === "native";
-
-  // 矩形変化通知(active=true の時のみ ResizeObserver 等を張る)
-  const onRectChange = useCallback(
-    (paneId: string, rect: PaneRect) => {
-      wsSend({ type: "update_native_terminal_rect", paneId, rect });
-    },
-    [wsSend],
-  );
-  useNativeTerminalRect({
-    paneRef: rootRef,
-    paneId: sessionId,
-    active: isNativeMode && isTauri && isVisible,
-    onRectChange,
-  });
-
-  // 可視状態の切替(タブ切替・detach 時にネイティブ端末も hide/show)
-  useEffect(() => {
-    if (!isNativeMode || !isTauri) return;
-    wsSend({ type: "set_native_terminal_visible", paneId: sessionId, visible: isVisible });
-  }, [isNativeMode, isVisible, sessionId, wsSend]);
-
-  // 起動・終了(マウント時に spawn、アンマウント時に close)
-  useEffect(() => {
-    if (!isNativeMode || !isTauri) return;
-    const root = rootRef.current;
-    if (!root) return;
-    const r = root.getBoundingClientRect();
-    const initialRect: PaneRect = {
-      x: r.left,
-      y: r.top,
-      width: r.width,
-      height: r.height,
-      scaleFactor: window.devicePixelRatio || 1,
-    };
-    wsSend({ type: "spawn_native_terminal", paneId: sessionId, cwd: null, rect: initialRect });
-    return () => {
-      wsSend({ type: "close_native_terminal", paneId: sessionId });
-    };
-    // sessionId と isNativeMode が変わったら spawn/close をやり直す
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isNativeMode, sessionId]);
+  }, [sessionId, handleResize, wsSend, wsOnMessage, nudgeRedraw]);
 
   return (
     <div
       ref={rootRef}
       data-session-id={sessionId}
-      className={`flex flex-col bg-bg min-h-0 min-w-0 h-full w-full relative overflow-hidden ${dragOver ? "ring-2 ring-accent ring-inset" : ""}`}
+      className={`flex flex-col bg-bg min-h-0 h-full w-full relative overflow-hidden ${dragOver ? "ring-2 ring-accent ring-inset" : ""}`}
       {...(!isTauri ? {
         onDragEnter: (e: React.DragEvent) => {
           e.preventDefault();
@@ -637,26 +699,52 @@ export default function TerminalPane({
           )}
         </div>
       </div>
-      {/* xterm モード: xterm.js の DOM。Native モードでは中身を空のまま
-          (Rust が wt.exe / Terminal.app を重ねるので透過させる) */}
-      {terminalMode === "xterm" ? (
-        <div ref={termRef} className="flex-1 min-h-0 min-w-0 overflow-hidden" />
-      ) : (
-        <div
-          ref={termRef}
-          className="flex-1 min-h-0 min-w-0 overflow-hidden flex items-center justify-center text-text-muted text-xs select-none"
-          // ネイティブ端末がオーバーレイされるまでの空き枠(Preview バッジ表示)
-        >
-          <div className="text-center">
-            <div className="text-accent text-xs mb-1">⚡ Native Terminal (Preview)</div>
-            <div className="text-text-muted text-[10px]">
-              {isTauri
-                ? "OS 純正ターミナルをこの枠に重ねます…"
-                : "このモードは Tauri デスクトップ版のみ対応"}
-            </div>
-          </div>
+      {showSearch && (
+        <div className="absolute top-9 right-2 z-20 flex items-center gap-1 bg-surface border border-border rounded-md shadow-lg px-2 py-1">
+          <input
+            ref={searchInputRef}
+            value={searchTerm}
+            placeholder="検索…"
+            className="bg-transparent text-sm text-text outline-none w-40"
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              searchAddonRef.current?.findNext(e.target.value, { incremental: true });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (e.shiftKey) searchAddonRef.current?.findPrevious(searchTerm);
+                else searchAddonRef.current?.findNext(searchTerm);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                setShowSearch(false);
+                searchAddonRef.current?.clearDecorations();
+                terminalRef.current?.focus();
+              }
+            }}
+          />
+          <button
+            onClick={() => searchAddonRef.current?.findPrevious(searchTerm)}
+            className="text-xs text-text-muted hover:text-text px-1"
+            title="前へ (Shift+Enter)"
+          >▲</button>
+          <button
+            onClick={() => searchAddonRef.current?.findNext(searchTerm)}
+            className="text-xs text-text-muted hover:text-text px-1"
+            title="次へ (Enter)"
+          >▼</button>
+          <button
+            onClick={() => {
+              setShowSearch(false);
+              searchAddonRef.current?.clearDecorations();
+              terminalRef.current?.focus();
+            }}
+            className="text-xs text-text-muted hover:text-danger px-1"
+            title="閉じる (Esc)"
+          >✕</button>
         </div>
       )}
+      <div ref={termRef} className="flex-1 min-h-0 min-w-0 overflow-hidden" />
       {dragOver && (
         <div className="absolute inset-0 bg-accent/10 flex items-center justify-center pointer-events-none z-10">
           <div className="bg-surface border border-accent rounded-lg px-6 py-3 text-text font-medium shadow-lg pointer-events-none">

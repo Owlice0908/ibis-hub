@@ -27,6 +27,16 @@ if [ ! -d "dist" ]; then
   npm run build
 fi
 
+# Stop any previous instance still bound to this port, so double-clicking this
+# launcher always takes over cleanly. Without this, the old server keeps running
+# (old code) and the new one silently fails to bind the port.
+EXISTING=$(lsof -ti tcp:9100 2>/dev/null)
+if [ -n "$EXISTING" ]; then
+  echo "  Stopping previous instance on :9100 ($EXISTING)..."
+  kill $EXISTING 2>/dev/null
+  sleep 1
+fi
+
 echo ""
 echo "  Ibis Hub starting..."
 echo "  http://localhost:9100"

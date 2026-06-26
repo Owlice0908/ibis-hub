@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import type { Session, LayoutMode, ThemeMode, TerminalMode } from "../types";
+import type { Session, LayoutMode, ThemeMode } from "../types";
 import logoUrl from "../assets/logo.png";
 import NotificationBadge from "./NotificationBadge";
 
@@ -11,12 +11,14 @@ interface SidebarProps {
   theme: ThemeMode;
   questionSessionIds: string[];
   onLayoutChange: (layout: LayoutMode) => void;
+  onResetGrid: () => void;
   onThemeChange: (theme: ThemeMode) => void;
-  // terminalMode を省略すれば App.tsx 側で環境に応じて自動決定される(Tauri=native / browser=xterm)
-  onCreateSession: (type?: "claude" | "shell", terminalMode?: TerminalMode) => void;
+  onCreateSession: (type?: "claude" | "shell" | "chatgpt") => void;
   onSelectSession: (id: string) => void;
   onCloseSession: (id: string) => void;
   onRenameSession: (id: string, name: string) => void;
+  onReorderSessions: (fromId: string, toId: string) => void;
+  onOpenConversations: () => void;
 }
 
 export default function Sidebar({
@@ -27,14 +29,19 @@ export default function Sidebar({
   theme,
   questionSessionIds,
   onLayoutChange,
+  onResetGrid,
   onThemeChange,
   onCreateSession,
   onSelectSession,
   onCloseSession,
   onRenameSession,
+  onReorderSessions,
+  onOpenConversations,
 }: SidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -54,6 +61,7 @@ export default function Sidebar({
       onRenameSession(editingId, editValue.trim());
       setEditingId(null);
     } else {
+      // Empty name — revert to original (cancel rename)
       setEditingId(null);
     }
   };
@@ -78,7 +86,7 @@ export default function Sidebar({
           className="text-lg px-1.5 py-0.5 rounded hover:bg-surface-hover"
           title={theme === "dark" ? "Light mode" : "Dark mode"}
         >
-          {theme === "dark" ? "☀" : "☾"}
+          {theme === "dark" ? "\u2600" : "\u263E"}
         </button>
       </div>
 
@@ -99,6 +107,15 @@ export default function Sidebar({
             </button>
           ))}
         </div>
+        {layout === "grid" && (
+          <button
+            onClick={onResetGrid}
+            className="w-full mt-1.5 py-1 text-xs text-text-muted hover:text-text rounded border border-border hover:bg-surface-hover transition-colors"
+            title="グリッドの大きさを均等に戻します"
+          >
+            ⤢ 整理（均等に戻す）
+          </button>
+        )}
       </div>
 
       {/* Sessions list */}
@@ -111,8 +128,39 @@ export default function Sidebar({
           sessions.map((session) => (
             <div
               key={session.id}
+              draggable={editingId !== session.id}
               onClick={() => onSelectSession(session.id)}
+              onDragStart={(e) => {
+                setDragId(session.id);
+                e.dataTransfer.effectAllowed = "move";
+                // WebKit (Tauri's WKWebView on macOS) won't START a drag unless
+                // some data is set here — without this the drag never fires.
+                e.dataTransfer.setData("text/plain", session.id);
+              }}
+              onDragOver={(e) => {
+                if (!dragId || dragId === session.id) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                setDropTargetId(session.id);
+              }}
+              onDragLeave={() => {
+                setDropTargetId((cur) => (cur === session.id ? null : cur));
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragId && dragId !== session.id) {
+                  onReorderSessions(dragId, session.id);
+                }
+                setDragId(null);
+                setDropTargetId(null);
+              }}
+              onDragEnd={() => {
+                setDragId(null);
+                setDropTargetId(null);
+              }}
               className={`mx-2 mb-1 px-3 py-2 rounded-md cursor-pointer group ${
+                dropTargetId === session.id ? "border-t-2 border-t-accent" : ""
+              } ${dragId === session.id ? "opacity-40" : ""} ${
                 focusedSessionId === session.id
                   ? "bg-accent/20 border border-accent/40"
                   : activeSessionIds.includes(session.id)
@@ -174,13 +222,43 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* New session buttons — モードは App.tsx で環境に応じて自動決定 */}
+      {/* Lighten: clear all terminals' scrollback to free memory */}
+      {sessions.length > 0 && (
+        <div className="px-3 pt-2">
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent("ibis-clear-all"))}
+            className="w-full py-1.5 text-xs text-text-muted hover:text-text rounded-md border border-border hover:bg-surface-hover transition-colors"
+            title="全セッションの履歴表示を消してメモリを軽くします（会話自体は消えません）"
+          >
+            🪶 全部軽くする
+          </button>
+        </div>
+      )}
+
+      {/* Past conversations */}
+      <div className="px-3 pt-2">
+        <button
+          onClick={onOpenConversations}
+          className="w-full py-1.5 text-xs text-text-muted hover:text-text rounded-md border border-border hover:bg-surface-hover transition-colors"
+          title="保存された過去のチャットを開いたり削除したりできます"
+        >
+          🕘 過去のチャット
+        </button>
+      </div>
+
+      {/* New session buttons */}
       <div className="p-3 border-t border-border flex gap-2">
         <button
           onClick={() => onCreateSession("claude")}
           className="flex-1 py-2 bg-accent hover:bg-accent-hover text-white text-sm rounded-md transition-colors font-medium"
         >
           + Claude
+        </button>
+        <button
+          onClick={() => onCreateSession("chatgpt")}
+          className="flex-1 py-2 bg-green-600 hover:bg-green-500 text-white text-sm rounded-md transition-colors font-medium"
+        >
+          + ChatGPT
         </button>
         <button
           onClick={() => onCreateSession("shell")}

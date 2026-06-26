@@ -1,6 +1,6 @@
 import { WebSocketServer } from "ws";
 import { createServer } from "http";
-import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, readdirSync } from "fs";
+import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, openSync, readSync, closeSync, renameSync } from "fs";
 import { join, extname } from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
@@ -9,7 +9,152 @@ import { execSync, spawnSync, spawn } from "child_process";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const DIST_DIR = join(__dirname, "dist");
-const SESSIONS_FILE = join(__dirname, ".sessions.json");
+// Namespace per-instance state by port so a second instance (e.g. PORT=9101)
+// keeps its own session list / scrollback and doesn't fight with the main one.
+const INSTANCE_SUFFIX = (process.env.PORT && process.env.PORT !== "9100") ? `.${process.env.PORT}` : "";
+const SESSIONS_FILE = join(__dirname, `.sessions${INSTANCE_SUFFIX}.json`);
+// On-disk copy of each session's terminal output, so the screen is restored
+// (not blank) after Ibis Hub is killed and relaunched.
+const SCROLLBACK_DIR = join(__dirname, `.sessions-data${INSTANCE_SUFFIX}`);
+try { mkdirSync(SCROLLBACK_DIR, { recursive: true }); } catch {}
+
+function scrollbackPath(id) {
+  return join(SCROLLBACK_DIR, `${id}.log`);
+}
+function writeScrollbackToDisk(session) {
+  try { writeFileSync(scrollbackPath(session.id), session.scrollback || "", "utf-8"); } catch {}
+}
+function readScrollbackFromDisk(id) {
+  try { return readFileSync(scrollbackPath(id), "utf-8"); } catch { return ""; }
+}
+function deleteScrollbackFromDisk(id) {
+  try { unlinkSync(scrollbackPath(id)); } catch {}
+}
+
+// Claude session ids already assigned to a session, so two sessions can never
+// resume the SAME conversation (which would make them mirror each other).
+const claimedClaudeIds = new Set();
+
+// List Claude Code transcript ids for a cwd, newest first. Claude stores them
+// under ~/.claude/projects/<encoded-cwd>/<id>.jsonl.
+function listClaudeSessionIds(cwd) {
+  try {
+    const encoded = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+    const dir = join(homedir(), ".claude", "projects", encoded);
+    return readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => ({ id: f.replace(/\.jsonl$/, ""), m: statSync(join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m)
+      .map((x) => x.id);
+  } catch {
+    return [];
+  }
+}
+
+// True once Claude has written this conversation's transcript to disk (it only
+// does so AFTER the first message). We resume by id only when the file exists;
+// otherwise we re-open the same id fresh, since `--resume` on a non-existent
+// transcript fails.
+function claudeTranscriptExists(cwd, id) {
+  try {
+    const encoded = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+    return existsSync(join(homedir(), ".claude", "projects", encoded, `${id}.jsonl`));
+  } catch {
+    return false;
+  }
+}
+
+// One-time recovery map. These tabs had their Claude session blocked by the
+// bypass-permissions disclaimer, so they never wrote a transcript and their
+// recorded id points at an empty conversation. Re-point them to the real prior
+// conversation that's still on disk, so --resume brings the content back. Once
+// restored, the corrected id is persisted, so this map can be emptied later.
+const CLAUDE_ID_RECOVERY = {
+  "6e436175-d111-44b8-99d5-769fd26af66a": "9c027586-0c81-4bed-8d56-6b76b3c119ad", // 物販マニュアル
+  "0729a801-241b-4618-a09d-9fd812184bc8": "834e0edd-37dd-4ef7-b72e-894d8d170e92", // HUB構築（代理店・パートナー管理）
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function claudeProjectDir(cwd) {
+  return join(homedir(), ".claude", "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+}
+// Read just the bytes we need from a (possibly large) transcript: the tail for
+// the latest `ai-title` (Claude's friendly summary) and the head for the first
+// user message as a fallback label. Avoids parsing multi-MB files in full.
+function readFileSlice(path, fromEnd, bytes) {
+  let fd;
+  try {
+    fd = openSync(path, "r");
+    const size = statSync(path).size;
+    const start = fromEnd ? Math.max(0, size - bytes) : 0;
+    const len = Math.min(bytes, size - start);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, start);
+    return buf.toString("utf-8");
+  } catch { return ""; }
+  finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
+}
+function conversationTitle(path) {
+  // Latest ai-title line lives near the end.
+  const tail = readFileSlice(path, true, 256 * 1024);
+  const lines = tail.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].includes('"ai-title"')) {
+      try { const t = JSON.parse(lines[i]).aiTitle; if (t) return String(t); } catch {}
+    }
+  }
+  // Fallback: first user message from the head.
+  const head = readFileSlice(path, false, 64 * 1024);
+  for (const line of head.split("\n")) {
+    if (line.includes('"type":"user"')) {
+      try {
+        let c = JSON.parse(line).message?.content ?? "";
+        if (Array.isArray(c)) c = c.map((x) => (x && x.text) || "").join(" ");
+        c = String(c).replace(/\s+/g, " ").trim();
+        if (c) return c.slice(0, 80);
+      } catch {}
+    }
+  }
+  return "(無題)";
+}
+// List a folder's saved Claude conversations, newest first, with friendly
+// titles — the data behind the "過去のチャット" panel.
+function listConversations(cwd) {
+  const dir = claudeProjectDir(cwd);
+  let files;
+  try { files = readdirSync(dir).filter((f) => f.endsWith(".jsonl")); } catch { return []; }
+  return files
+    .map((f) => {
+      const id = f.replace(/\.jsonl$/, "");
+      const full = join(dir, f);
+      let mtime = 0, size = 0;
+      try { const st = statSync(full); mtime = st.mtimeMs; size = st.size; } catch {}
+      // Prefer the tab name the user gave this conversation; fall back to
+      // Claude's auto title. Show the auto title as a subtitle when it differs,
+      // so a user-named tab still carries a hint of what the chat was about.
+      const aiTitle = conversationTitle(full);
+      const tabName = conversationNames[id];
+      const title = tabName || aiTitle;
+      const subtitle = tabName && aiTitle && aiTitle !== tabName ? aiTitle : "";
+      return { id, mtime, sizeBytes: size, title, subtitle };
+    })
+    .sort((a, b) => b.mtime - a.mtime);
+}
+
+// Capture the id of the transcript a freshly-launched `claude` just created by
+// diffing against a snapshot taken before launch — so each session is tied to
+// its OWN conversation, even when several share one directory. Returns the new,
+// not-yet-claimed id, or null if none appeared (e.g. user hasn't typed yet).
+function captureNewClaudeSessionId(cwd, beforeIds) {
+  const before = new Set(beforeIds);
+  for (const id of listClaudeSessionIds(cwd)) {
+    if (!before.has(id) && !claimedClaudeIds.has(id)) {
+      claimedClaudeIds.add(id);
+      return id;
+    }
+  }
+  return null;
+}
 const PORT = parseInt(process.env.PORT || "9100", 10);
 if (isNaN(PORT) || PORT < 1 || PORT > 65535) {
   console.error(`Invalid PORT: ${process.env.PORT}`);
@@ -71,16 +216,34 @@ const httpServer = createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 const sessions = new Map();
 
-// Save session metadata to disk (name, type, cwd, claudeSessionId, terminalMode — not PTY state)
-// terminalMode is optional ("xterm"|"native"). Browser version always treats it as "xterm".
+// Persistent ledger of claudeSessionId -> the tab name the user gave it. Tab
+// names are far more recognizable than Claude's auto titles in the "過去のチャット"
+// list, but they'd vanish when a tab closes (close removes it from sessions).
+// We keep them here so a conversation keeps its human name forever.
+const NAMES_FILE = join(__dirname, `.conversation-names${INSTANCE_SUFFIX}.json`);
+let conversationNames = {};
+try {
+  if (existsSync(NAMES_FILE)) conversationNames = JSON.parse(readFileSync(NAMES_FILE, "utf-8")) || {};
+} catch { conversationNames = {}; }
+
+// Save session metadata to disk (name, type, cwd — not PTY state)
 function saveSessionsToDisk() {
   try {
     const list = Array.from(sessions.values()).map((s) => ({
       id: s.id, name: s.name, cwd: s.cwd, sessionType: s.sessionType,
-      ...(s.claudeSessionId ? { claudeSessionId: s.claudeSessionId } : {}),
-      ...(s.terminalMode && s.terminalMode !== "xterm" ? { terminalMode: s.terminalMode } : {}),
+      claudeSessionId: s.claudeSessionId || null,
+      autoYes: !!s.autoYes, // keep the auto-Yes toggle across restarts
     }));
     writeFileSync(SESSIONS_FILE, JSON.stringify(list), "utf-8");
+    // Merge current tab names into the ledger so they survive the tab closing.
+    let changed = false;
+    for (const s of sessions.values()) {
+      if (s.claudeSessionId && s.name && conversationNames[s.claudeSessionId] !== s.name) {
+        conversationNames[s.claudeSessionId] = s.name;
+        changed = true;
+      }
+    }
+    if (changed) { try { writeFileSync(NAMES_FILE, JSON.stringify(conversationNames), "utf-8"); } catch {} }
   } catch {}
 }
 
@@ -92,31 +255,6 @@ function restoreSessionsFromDisk() {
     if (!Array.isArray(data)) return [];
     return data;
   } catch { return []; }
-}
-
-// Claude Code stores per-cwd conversation history at ~/.claude/projects/<encoded>/<uuid>.jsonl
-// where <encoded> is the cwd with '/' replaced by '-'.
-function encodeCwdForClaude(cwd) {
-  return cwd.replace(/\//g, "-");
-}
-
-// Find the most-recent .jsonl file in this cwd's Claude project dir.
-// `since` (epoch ms) restricts to files written after that time, so a tab can
-// pick up its OWN newly-created conversation rather than another tab's.
-function findLatestClaudeSessionId(cwd, since = 0) {
-  try {
-    const projectDir = join(homedir(), ".claude", "projects", encodeCwdForClaude(cwd));
-    if (!existsSync(projectDir)) return null;
-    const files = readdirSync(projectDir)
-      .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => {
-        try { return { name: f, mtimeMs: statSync(join(projectDir, f)).mtimeMs }; }
-        catch { return null; }
-      })
-      .filter((x) => x && x.mtimeMs >= since)
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    return files.length > 0 ? files[0].name.replace(/\.jsonl$/, "") : null;
-  } catch { return null; }
 }
 
 function createPtySession(shell, args, cwd, cols, rows) {
@@ -200,15 +338,122 @@ function broadcastToSubscribers(session, message) {
   }
 }
 
-wss.on("connection", (ws) => {
+// Strip ANSI escape sequences (CSI, OSC, single-char) so prompt detection sees
+// the plain text the user reads, not the cursor-movement/color noise around it.
+function stripAnsi(s) {
+  return s
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC ... BEL / ST
+    .replace(/\x1b[\[\]][0-9;?]*[ -\/]*[@-~]/g, "")     // CSI sequences
+    .replace(/\x1b[=>NOM]/g, "");                        // misc single-char
+}
+
+// Look at the recent output tail and decide whether it's sitting on an
+// interactive prompt the user is expected to answer. Returns:
+//   "enter" — a numbered confirmation menu (Claude Code / codex: "❯ 1. Yes …")
+//             where the safe default is already highlighted, so pressing Enter
+//             accepts it.
+//   "yes"   — a classic "(y/n)" style prompt that wants a literal "y".
+//   null    — not a prompt (so we never type into the middle of normal output,
+//             which was the "へんなところでy" stray-keystroke bug).
+function detectPrompt(tail) {
+  const s = stripAnsi(tail);
+  const tailEnd = s.slice(-800); // only the live region near the cursor
+  // Claude Code / codex numbered permission menu — option 1 is the affirmative.
+  if (/(?:❯|›|▶|»|>)\s*1[\.\)]\s*(?:Yes|はい|Allow|Proceed|Accept)/i.test(tailEnd)) {
+    return "enter";
+  }
+  // Classic yes/no prompt must be at the very end (the active question line).
+  const trimmed = s.replace(/[\s ]+$/, "");
+  if (/(?:\(y\/n\)|\(Y\/n\)|\[Y\/n\]|\[y\/N\]|\(yes\/no\))[\s:>?\.]*$/i.test(trimmed)) {
+    return "yes";
+  }
+  return null;
+}
+
+// Single place that handles PTY output for every session (fresh, restored, or
+// resumed-from-history): persist scrollback, fan out to viewers, flag prompts
+// for the sidebar badge, and — when this tab has auto-answer turned ON — accept
+// the prompt automatically (the user's goal: not having to press Yes on every
+// confirmation).
+//
+// The old version misfired: it matched "(y/n)" ANYWHERE in a chunk, so it typed
+// "y" into the middle of normal output. The fix: only react when a real prompt
+// is sitting at the END of the recent output, and use `promptArmed` to respond
+// exactly ONCE per prompt — menu redraws/spinners don't trigger repeat keys.
+// For a numbered menu we send Enter (accepts the highlighted default = Yes);
+// for a classic "(y/n)" prompt we send "y".
+function handlePtyOutput(session, data) {
+  appendScrollback(session, data);
+  broadcastToSubscribers(session, { type: "pty_output", id: session.id, data });
+
+  session.tail = ((session.tail || "") + data).slice(-4000);
+  const prompt = detectPrompt(session.tail);
+
+  if (!prompt) {
+    session.promptArmed = true; // saw normal output → ready for the next prompt
+    return;
+  }
+  if (session.promptArmed === false) return; // already handled this prompt
+  session.promptArmed = false;
+
+  broadcastToSubscribers(session, { type: "session_question", id: session.id });
+  if (session.autoYes) {
+    session.lastAutoYes = Date.now();
+    try { session.proc.write(prompt === "enter" ? "\r" : "y\r"); } catch {}
+  }
+}
+
+// A Tailscale device gets an IP in the 100.64.0.0/10 CGNAT range and a MagicDNS
+// name ending in ".ts.net". Connections from there are members of the operator's
+// own private tailnet (Tailscale itself is the auth layer), so we trust them —
+// this is what lets the operator open a staff member's hub to help/fix it.
+function isTailscaleHost(host) {
+  if (host.endsWith(".ts.net")) return true;
+  const m = /^100\.(\d+)\./.exec(host);
+  if (m) {
+    const second = parseInt(m[1], 10);
+    return second >= 64 && second <= 127; // 100.64.0.0 – 100.127.255.255
+  }
+  return false;
+}
+
+// Only accept WebSocket connections from the local app itself or from the same
+// private Tailscale network. This blocks a malicious website (e.g. via
+// DNS-rebinding) and random LAN devices from quietly connecting to the local
+// server and spawning shells. Native (Tauri) and curl send no Origin.
+function isAllowedOrigin(origin) {
+  if (!origin) return true; // native webview / non-browser clients
+  try {
+    const host = new URL(origin).hostname;
+    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1") return true;
+    return isTailscaleHost(host);
+  } catch {
+    return false;
+  }
+}
+
+wss.on("connection", (ws, req) => {
+  if (!isAllowedOrigin(req.headers.origin)) {
+    console.warn(`Rejected WebSocket from origin: ${req.headers.origin}`);
+    try { ws.close(1008, "Forbidden origin"); } catch {}
+    return;
+  }
+  // Heartbeat: a browser tab whose laptop slept or whose Wi-Fi blipped can leave
+  // the socket "half-open" — TCP is dead but no close frame ever arrives, so the
+  // session pane just freezes. Mark each socket alive on any sign of life and let
+  // the periodic sweep terminate the ones that went quiet (see HEARTBEAT below).
+  ws.isAlive = true;
+  ws.on("pong", () => { ws.isAlive = true; });
   ws.on("error", (err) => {
     console.error("WebSocket error:", err.message);
   });
 
   ws.on("message", (raw) => {
+    ws.isAlive = true; // any inbound message proves the socket is still live
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     if (!msg || typeof msg.type !== "string") return;
+    if (msg.type === "pong") return; // client's reply to our app-level ping
 
     switch (msg.type) {
       case "create_session": {
@@ -216,10 +461,6 @@ wss.on("connection", (ws) => {
         const name = (msg.name || `Session ${sessions.size + 1}`).slice(0, 256);
         const cwd = msg.working_dir || homedir();
         const sessionType = msg.session_type || "claude";
-        // terminalMode: "xterm"|"native". Browser (this server) always runs xterm regardless of request.
-        // We persist the requested value so a future Tauri session pickup can honor it.
-        const requestedMode = msg.terminalMode === "native" ? "native" : "xterm";
-        const terminalMode = "xterm"; // browser cannot host native overlay; effective mode is always xterm here
 
         const plat = platform();
         const userShell = plat === "win32" ? (process.env.COMSPEC || "cmd.exe") : (process.env.SHELL || "/bin/bash");
@@ -235,36 +476,46 @@ wss.on("connection", (ws) => {
           break;
         }
 
-        const session = { id, name, proc, status: "running", cwd, sessionType, claudeSessionId: null, subscribers: new Set([ws]), scrollback: "", terminalMode, requestedMode };
+        const session = { id, name, proc, status: "running", cwd, sessionType, subscribers: new Set([ws]), scrollback: "", autoYes: false };
         sessions.set(id, session);
 
         // PTY output: broadcast to all subscribers + save scrollback
-        proc.onData((data) => {
-          appendScrollback(session, data);
-          broadcastToSubscribers(session, { type: "pty_output", id, data });
-
-          if (data.includes("(y/n)") || data.includes("(Y/n)") || data.includes("[Y/n]") || data.includes("[y/N]")) {
-            broadcastToSubscribers(session, { type: "session_question", id });
-          }
-        });
+        proc.onData((data) => handlePtyOutput(session, data));
 
         proc.onExit(() => {
           session.status = "exited";
           broadcastToSubscribers(session, { type: "session_exited", id });
         });
 
-        // 新規セッション → サーバ側で UUID を確定させて `claude --session-id <uuid>` で起動する。
-        // これにより、同 cwd の複数タブが衝突せず、サーバ再起動でも `--resume <uuid>` で確実に戻せる。
+        // For agent sessions, launch the CLI once the shell is ready.
+        // claude -> `claude --session-id <uuid>`, chatgpt -> OpenAI's `codex`.
+        // We MINT the Claude session id ourselves and pass it with --session-id,
+        // instead of guessing it afterwards by diffing the transcript folder.
+        // That old guess routinely failed (esp. several sessions sharing one
+        // cwd), leaving claudeSessionId null so a relaunch started Claude blank
+        // and the conversation was lost. Owning the id means we know it the
+        // instant the tab is created and can persist it immediately, so the
+        // exact conversation always comes back.
+        // New sessions launch with ALL permission/approval prompts auto-granted,
+        // so you never get stopped to confirm edits or commands.
+        //   Claude → --dangerously-skip-permissions (bypass all permission checks)
+        //   codex  → --dangerously-bypass-approvals-and-sandbox (no prompts, full access)
+        let agentCmd = null;
         if (sessionType === "claude") {
-          const newSid = randomUUID();
-          session.claudeSessionId = newSid;
-          saveSessionsToDisk();
-          setTimeout(() => { proc.write(`claude --session-id ${newSid}\n`); }, 500);
+          session.claudeSessionId = randomUUID();
+          agentCmd = `claude --session-id ${session.claudeSessionId} --dangerously-skip-permissions`;
+        } else if (sessionType === "chatgpt") {
+          agentCmd = "codex --dangerously-bypass-approvals-and-sandbox";
+        }
+        if (agentCmd) {
+          setTimeout(() => {
+            proc.write(`${agentCmd}\n`);
+          }, 500);
         }
 
         ws.send(JSON.stringify({
           type: "session_created",
-          session: { id, name, status: "running", working_dir: cwd, session_type: sessionType, terminalMode, requestedMode },
+          session: { id, name, status: "running", working_dir: cwd, session_type: sessionType },
         }));
         saveSessionsToDisk();
         break;
@@ -279,6 +530,9 @@ wss.on("connection", (ws) => {
           if (!alreadySubscribed && s.scrollback) {
             ws.send(JSON.stringify({ type: "pty_output", id: msg.id, data: s.scrollback }));
           }
+          // Tell the client the current auto-Yes state so the toggle reflects
+          // reality (e.g. shows green) after a reload/reconnect.
+          ws.send(JSON.stringify({ type: "auto_yes_state", id: msg.id, enabled: !!s.autoYes }));
         }
         break;
       }
@@ -305,7 +559,20 @@ wss.on("connection", (ws) => {
           // Notify all subscribers before removing
           broadcastToSubscribers(s, { type: "session_closed", id: msg.id });
           sessions.delete(msg.id);
+          deleteScrollbackFromDisk(msg.id);
           saveSessionsToDisk();
+        }
+        break;
+      }
+
+      case "clear_scrollback": {
+        // "全部軽くする": shrink the saved output so memory/disk shrink. The live
+        // PTY process and the AI conversation itself are untouched. keepTail
+        // keeps the most recent output so the restored screen isn't blank.
+        const s = sessions.get(msg.id);
+        if (s) {
+          s.scrollback = msg.keepTail ? s.scrollback.slice(-10000) : "";
+          writeScrollbackToDisk(s);
         }
         break;
       }
@@ -398,9 +665,88 @@ paths.join('|');`;
 
       case "list_sessions": {
         const list = Array.from(sessions.values()).map((s) => ({
-          id: s.id, name: s.name, status: s.status, working_dir: s.cwd, session_type: s.sessionType,
+          id: s.id, name: s.name, status: s.status, working_dir: s.cwd, session_type: s.sessionType, auto_yes: !!s.autoYes,
         }));
         ws.send(JSON.stringify({ type: "session_list", sessions: list }));
+        break;
+      }
+
+      case "set_auto_yes": {
+        // Per-tab toggle: when on, this session auto-answers y/n prompts itself.
+        const s = sessions.get(msg.id);
+        if (s) {
+          s.autoYes = !!msg.enabled;
+          broadcastToSubscribers(s, { type: "auto_yes_state", id: msg.id, enabled: s.autoYes });
+          saveSessionsToDisk(); // remember the toggle across restarts
+        }
+        break;
+      }
+
+      case "list_conversations": {
+        const cwd = msg.cwd || homedir();
+        // Hide ids currently live in a tab — those are "open", not "past".
+        const live = new Set(
+          Array.from(sessions.values())
+            .filter((s) => s.cwd === cwd && s.claudeSessionId)
+            .map((s) => s.claudeSessionId),
+        );
+        const conversations = listConversations(cwd).filter((c) => !live.has(c.id));
+        ws.send(JSON.stringify({ type: "conversation_list", cwd, conversations }));
+        break;
+      }
+
+      case "delete_conversation": {
+        // Soft-delete: move the transcript into a trash folder so it can be
+        // recovered, rather than destroying the conversation outright.
+        const cwd = msg.cwd || homedir();
+        if (!UUID_RE.test(String(msg.id || ""))) {
+          ws.send(JSON.stringify({ type: "conversation_delete_error", id: msg.id, error: "bad id" }));
+          break;
+        }
+        const dir = claudeProjectDir(cwd);
+        const src = join(dir, `${msg.id}.jsonl`);
+        try {
+          const trash = join(dir, ".ibishub-trash");
+          mkdirSync(trash, { recursive: true });
+          renameSync(src, join(trash, `${msg.id}.jsonl`));
+          ws.send(JSON.stringify({ type: "conversation_deleted", id: msg.id }));
+        } catch (e) {
+          ws.send(JSON.stringify({ type: "conversation_delete_error", id: msg.id, error: e.message }));
+        }
+        break;
+      }
+
+      case "resume_conversation": {
+        // Open a past conversation in a brand-new tab (so it never fights with a
+        // claude already running in another tab). The tab owns this id, so it is
+        // durable from here on, exactly like a fresh session.
+        const cwd = msg.cwd || homedir();
+        if (!UUID_RE.test(String(msg.id || ""))) break;
+        const id = randomUUID();
+        const name = (msg.name || "過去のチャット").slice(0, 256);
+        const plat = platform();
+        const userShell = plat === "win32" ? (process.env.COMSPEC || "cmd.exe") : (process.env.SHELL || "/bin/bash");
+        const args = plat === "win32" ? [] : ["-l"];
+        let proc;
+        try {
+          proc = createPtySession(userShell, args, cwd, msg.cols, msg.rows);
+        } catch (e) {
+          ws.send(JSON.stringify({ type: "session_error", error: `Failed to start session: ${e.message}` }));
+          break;
+        }
+        const session = { id, name, proc, status: "running", cwd, sessionType: "claude", subscribers: new Set([ws]), scrollback: "", claudeSessionId: msg.id, autoYes: false };
+        sessions.set(id, session);
+        proc.onData((data) => handlePtyOutput(session, data));
+        proc.onExit(() => {
+          session.status = "exited";
+          broadcastToSubscribers(session, { type: "session_exited", id });
+        });
+        setTimeout(() => { proc.write(`claude --resume ${msg.id} --dangerously-skip-permissions\n`); }, 500);
+        ws.send(JSON.stringify({
+          type: "session_created",
+          session: { id, name, status: "running", working_dir: cwd, session_type: "claude" },
+        }));
+        saveSessionsToDisk();
         break;
       }
     }
@@ -413,6 +759,23 @@ paths.join('|');`;
     }
   });
 });
+
+// Heartbeat sweep: every 25s, drop sockets that never answered last round and
+// ping the rest. We send BOTH a protocol-level ping (cleans up dead sockets
+// server-side) and an app-level {type:"ping"} the browser can see (so the
+// client's own watchdog can notice silence and reconnect — browsers don't
+// expose protocol pongs to JS).
+const HEARTBEAT_MS = 25000;
+const heartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) { try { ws.terminate(); } catch {} continue; }
+    ws.isAlive = false;
+    try { ws.ping(); } catch {}
+    try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+  }
+}, HEARTBEAT_MS);
+heartbeat.unref();
+wss.on("close", () => clearInterval(heartbeat));
 
 httpServer.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
@@ -430,9 +793,6 @@ httpServer.listen(PORT, () => {
   const saved = restoreSessionsFromDisk();
   if (saved.length > 0) {
     console.log(`Restoring ${saved.length} session(s) from previous run...`);
-    // 同 cwd 内で `claude -c` で過去継続するタブは先着1つのみ。
-    // 残りタブは衝突を避けるため新規 UUID で `--session-id` 起動する。
-    const cwdContinueClaimed = new Set();
     for (const s of saved) {
       const cwd = s.cwd || homedir();
       const sessionType = s.sessionType || "shell";
@@ -442,68 +802,113 @@ httpServer.listen(PORT, () => {
 
       try {
         const proc = createPtySession(userShell, args, cwd, 80, 24);
-        const session = { id: s.id, name: s.name, proc, status: "running", cwd, sessionType, claudeSessionId: s.claudeSessionId || null, subscribers: new Set(), scrollback: "" };
+        // Preload the previous on-screen output so the restored pane shows
+        // history instead of being blank until new output arrives.
+        const session = { id: s.id, name: s.name, proc, status: "running", cwd, sessionType, subscribers: new Set(), scrollback: readScrollbackFromDisk(s.id), claudeSessionId: s.claudeSessionId || null, autoYes: s.autoYes === true };
         sessions.set(s.id, session);
 
-        proc.onData((data) => {
-          appendScrollback(session, data);
-          broadcastToSubscribers(session, { type: "pty_output", id: s.id, data });
-          if (data.includes("(y/n)") || data.includes("(Y/n)") || data.includes("[Y/n]") || data.includes("[y/N]")) {
-            broadcastToSubscribers(session, { type: "session_question", id: s.id });
-          }
-        });
+        proc.onData((data) => handlePtyOutput(session, data));
 
         proc.onExit(() => {
           session.status = "exited";
           broadcastToSubscribers(session, { type: "session_exited", id: s.id });
         });
 
-        let restoreMode = "none";
+        // On RESTORE (unlike a fresh create_session), resume the previous
+        // conversation instead of starting a new one, so the user picks up
+        // where they left off after killing/relaunching Ibis Hub.
+        //   claude -> `claude --resume <id>` ONLY when we have a unique captured
+        //             id (claim it so no other session reuses it). Otherwise a
+        //             FRESH `claude` — never `--continue`, which resumes the
+        //             folder's newest convo and would merge same-folder sessions.
+        //   codex  -> `codex resume --last`
+        let restoreAgentCmd = null;
         if (sessionType === "claude") {
-          if (s.claudeSessionId) {
-            // 既知 session-id へ確実に復帰。
-            setTimeout(() => { proc.write(`claude --resume ${s.claudeSessionId}\n`); }, 500);
-            restoreMode = `resume ${s.claudeSessionId.slice(0,8)}`;
-          } else if (!cwdContinueClaimed.has(cwd)) {
-            // この cwd で未だ -c を使っていない先着タブ → 過去会話を継続。
-            // 起動後 session-id を捕捉して、以降の再起動では --resume で戻せるように永続化する。
-            cwdContinueClaimed.add(cwd);
-            const launchTime = Date.now();
-            setTimeout(() => { proc.write("claude -c\n"); }, 500);
-            const captureClaudeSessionId = (attempt = 0) => {
-              const sid = findLatestClaudeSessionId(cwd, launchTime);
-              if (sid) {
-                session.claudeSessionId = sid;
-                saveSessionsToDisk();
-              } else if (attempt < 40) {
-                setTimeout(() => captureClaudeSessionId(attempt + 1), 3000);
-              }
-            };
-            setTimeout(() => captureClaudeSessionId(0), 3000);
-            restoreMode = "continue (-c)";
-          } else {
-            // 同 cwd で先着タブが既に -c を取った → 衝突回避のため新規 UUID で別会話を起動。
-            const newSid = randomUUID();
-            session.claudeSessionId = newSid;
-            saveSessionsToDisk();
-            setTimeout(() => { proc.write(`claude --session-id ${newSid}\n`); }, 500);
-            restoreMode = `fresh ${newSid.slice(0,8)}`;
+          let cid = s.claudeSessionId;
+          // Apply the one-time recovery remap and persist the corrected id so the
+          // tab is permanently linked to its real conversation from here on.
+          if (cid && CLAUDE_ID_RECOVERY[cid]) {
+            cid = CLAUDE_ID_RECOVERY[cid];
+            session.claudeSessionId = cid;
           }
+          if (cid && !claimedClaudeIds.has(cid)) {
+            claimedClaudeIds.add(cid);
+            // Resume the exact conversation by its id. If the user never sent a
+            // first message last run, no transcript exists yet — reopen the SAME
+            // id fresh (--resume would fail on a missing transcript).
+            restoreAgentCmd = claudeTranscriptExists(cwd, cid)
+              ? `claude --resume ${cid}`
+              : `claude --session-id ${cid}`;
+          } else {
+            // Legacy tab from before self-assigned ids (claudeSessionId null) —
+            // don't trap the user in Claude's resume picker. Start a fresh chat
+            // and assign it a durable id NOW, so from here on this tab always
+            // comes back to its own conversation. (Old conversations are still on
+            // disk and can be reopened later with `claude --resume`.)
+            session.claudeSessionId = randomUUID();
+            restoreAgentCmd = `claude --session-id ${session.claudeSessionId}`;
+          }
+        } else if (sessionType === "chatgpt") {
+          restoreAgentCmd = "codex --dangerously-bypass-approvals-and-sandbox resume --last";
+        }
+        // Auto-grant all permission/approval prompts on restore too (matches a
+        // fresh session). The codex flag is already baked into its command above.
+        if (sessionType === "claude" && restoreAgentCmd) {
+          restoreAgentCmd += " --dangerously-skip-permissions";
+        }
+        if (restoreAgentCmd) {
+          setTimeout(() => { proc.write(`${restoreAgentCmd}\n`); }, 500);
         }
 
-        console.log(`  Restored: ${s.name} (${sessionType}) [${restoreMode}]`);
+        console.log(`  Restored: ${s.name} (${sessionType})`);
       } catch (e) {
         console.error(`  Failed to restore ${s.name}: ${e.message}`);
       }
     }
+    // Persist any ids freshly assigned to legacy tabs during restore, so the
+    // NEXT relaunch resumes them instead of starting blank again.
+    saveSessionsToDisk();
   }
 });
+
+// Capture the transcript id of any Claude session that has one but hasn't been
+// recorded yet (Claude writes the file only after the user's first message).
+// Once recorded + saved, a relaunch resumes that exact conversation, so both
+// the tab AND its contents come back. Returns true if anything was captured.
+function captureMissingClaudeIds() {
+  let changed = false;
+  for (const [, session] of sessions) {
+    if (
+      session.sessionType === "claude" &&
+      !session.claudeSessionId &&
+      session.claudeBeforeIds &&
+      session.status === "running"
+    ) {
+      const cid = captureNewClaudeSessionId(session.cwd, session.claudeBeforeIds);
+      if (cid) {
+        session.claudeSessionId = cid;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+// Periodically persist scrollback so a crash / force-quit still leaves a
+// recent screen to restore (the graceful path below also flushes on exit),
+// and lazily capture Claude transcript ids as their files appear.
+setInterval(() => {
+  for (const [, session] of sessions) writeScrollbackToDisk(session);
+  if (captureMissingClaudeIds()) saveSessionsToDisk();
+}, 5000).unref();
 
 // Graceful shutdown — kill all PTY processes on server exit
 function shutdown() {
   console.log("\nShutting down — saving sessions and killing PTYs...");
+  captureMissingClaudeIds(); // last chance to link any just-started conversation
   saveSessionsToDisk();
   for (const [id, session] of sessions) {
+    writeScrollbackToDisk(session);
     try { session.proc.kill(); } catch {}
   }
   sessions.clear();
