@@ -435,8 +435,13 @@ export default function TerminalPane({
     //   クリック時に新タブで開くだけでブラウザがプレビュー表示する。
     // 2026-06-26 security review 反映: .svg / .json / .md / .txt / .csv は外す
     // (SVG XSS リスク、機密ファイル漏洩リスク)。画像 + PDF のみリンク化対象に。
+    //
+    // lookbehind `(?<=^|[\s\(\[{<'"`])` で URL の path 部分に被らないようにする
+    // (例: https://example.com/foo.png の /foo.png は前置文字が 'm' なのでマッチしない)。
+    // これがないと WebLinksAddon が処理すべき http URL を奪って /file?path= に振って
+    // しまい、クリックすると ibis hub の index.html が開いてしまう挙動になっていた。
     const FILE_PATH_RE =
-      /((?:\/|~\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
+      /(?<=^|[\s\(\[{<'"`])((?:\/|~\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
     const localFileLinkProvider = terminal.registerLinkProvider({
       provideLinks(bufferLineNumber, callback) {
         try {
