@@ -599,7 +599,12 @@ wss.on("connection", (ws, req) => {
           session.claudeSessionId = randomUUID();
           agentCmd = `claude --session-id ${session.claudeSessionId} --dangerously-skip-permissions`;
         } else if (sessionType === "chatgpt") {
-          agentCmd = "codex --dangerously-bypass-approvals-and-sandbox";
+          // 2026-06-30 ChatGPT (codex) は ~/ibis-hub-shared/ を cwd にして起動する。
+          //   理由: codex が生成する画像が ~/ibis-hub-shared/ 配下に保存されると、
+          //   ibis-hub の dist/shared symlink 経由で http://localhost:9100/shared/<name>
+          //   からブラウザでプレビューできる(server.mjs の既存静的配信ルートを利用)。
+          //   mkdir -p で存在保証してから cd する(初回や手動削除後でも壊れない)。
+          agentCmd = "mkdir -p ~/ibis-hub-shared && cd ~/ibis-hub-shared && codex --dangerously-bypass-approvals-and-sandbox";
         }
         if (agentCmd) {
           setTimeout(() => {
@@ -943,7 +948,8 @@ httpServer.listen(PORT, () => {
             restoreAgentCmd = `claude --session-id ${session.claudeSessionId}`;
           }
         } else if (sessionType === "chatgpt") {
-          restoreAgentCmd = "codex --dangerously-bypass-approvals-and-sandbox resume --last";
+          // 2026-06-30 restore 時も ~/ibis-hub-shared/ を cwd に揃える(上の新規作成側と同じ理由)
+          restoreAgentCmd = "mkdir -p ~/ibis-hub-shared && cd ~/ibis-hub-shared && codex --dangerously-bypass-approvals-and-sandbox resume --last";
         }
         // Auto-grant all permission/approval prompts on restore too (matches a
         // fresh session). The codex flag is already baked into its command above.

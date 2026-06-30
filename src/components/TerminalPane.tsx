@@ -440,15 +440,14 @@ export default function TerminalPane({
     // (例: https://example.com/foo.png の /foo.png は前置文字が 'm' なのでマッチしない)。
     // これがないと WebLinksAddon が処理すべき http URL を奪って /file?path= に振って
     // しまい、クリックすると ibis hub の index.html が開いてしまう挙動になっていた。
+    // 2026-06-30 検出範囲を **~/ibis-hub-shared/ 配下のみ** に絞ったので、ANSI 1;2c 系
+    // レスポンス文字列に偶然マッチして誤検出する確率は事実上ゼロ。LINKS_ENABLED の
+    // 全停止を解いて再有効化する。クリック時は /shared/<name> 経由で server.mjs の
+    // 既存静的配信ルートに任せる (= server.mjs の HTTP handler はそのまま流用)。
     const FILE_PATH_RE =
-      /(?<=^|[\s\(\[{<'"`])((?:\/|~\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
+      /(?<=^|[\s\(\[{<'"`])((?:\/home\/nakamura\/ibis-hub-shared\/|~\/ibis-hub-shared\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
     const localFileLinkProvider = terminal.registerLinkProvider({
       provideLinks(bufferLineNumber, callback) {
-        // 一時無効化: 画像/ファイルパスのリンク化が 1;2c / マウスレポート漏れの
-        // トリガーか切り分けるため、リンクを一切提供しない。原因確定後に安全化して戻す。
-        // (`as boolean` で tsc の到達不能コード解析を避け、下の本体の型narrowingを保つ)
-        const LINKS_ENABLED = false as boolean;
-        if (!LINKS_ENABLED) { callback(undefined); return; }
         try {
           const buf = terminal.buffer.active;
           const line = buf.getLine(bufferLineNumber - 1);
@@ -480,19 +479,13 @@ export default function TerminalPane({
               },
               text: pathStr,
               activate(_event: MouseEvent, uri: string) {
-                // ~/ で始まるなら $HOME に展開。サーバ側で再度正規化される。
-                let absPath = uri;
-                if (absPath.startsWith("~/")) {
-                  // HOME を取得できないので、サーバ側に渡して resolve させる方針:
-                  // ホームディレクトリ判定はサーバ側で行うので、~/ を含むパスは
-                  // 暫定的にそのまま渡す(サーバ側で path.resolve すれば
-                  // /home/<user>/.../ に展開はされないので、別経路として
-                  // process.env.HOME の取り扱いはサーバ側で必要。ここでは
-                  // 簡易対応として、まずは絶対パスのみリンク化対象とする)
-                  // → ~/ で始まるリンクは諦めて何もしない (絶対パスのみ対応)
-                  return;
-                }
-                const url = `/file?path=${encodeURIComponent(absPath)}`;
+                // ~/ibis-hub-shared/foo.png または /home/nakamura/ibis-hub-shared/foo.png
+                // → /shared/foo.png に変換して新タブで開く。server.mjs の既存静的配信が
+                // dist/shared -> ~/ibis-hub-shared/ の symlink を辿って配信してくれる。
+                const rel = uri
+                  .replace(/^\/home\/nakamura\/ibis-hub-shared\//, "")
+                  .replace(/^~\/ibis-hub-shared\//, "");
+                const url = `/shared/${rel.split("/").map(encodeURIComponent).join("/")}`;
                 window.open(url, "_blank", "noopener,noreferrer");
               },
               hover() {/* no-op */},
