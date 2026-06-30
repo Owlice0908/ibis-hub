@@ -440,12 +440,14 @@ export default function TerminalPane({
     // (例: https://example.com/foo.png の /foo.png は前置文字が 'm' なのでマッチしない)。
     // これがないと WebLinksAddon が処理すべき http URL を奪って /file?path= に振って
     // しまい、クリックすると ibis hub の index.html が開いてしまう挙動になっていた。
-    // 2026-06-30 検出範囲を **~/ibis-hub-shared/ 配下のみ** に絞ったので、ANSI 1;2c 系
-    // レスポンス文字列に偶然マッチして誤検出する確率は事実上ゼロ。LINKS_ENABLED の
-    // 全停止を解いて再有効化する。クリック時は /shared/<name> 経由で server.mjs の
-    // 既存静的配信ルートに任せる (= server.mjs の HTTP handler はそのまま流用)。
+    // 2026-06-30 検出範囲を **~/ibis-hub-shared/ 配下** + **~/.codex/generated_images/ 配下**
+    // に絞ったので、ANSI 1;2c 系レスポンス文字列に偶然マッチして誤検出する確率は事実上ゼロ。
+    // ~/.codex/generated_images/ は ~/ibis-hub-shared/ への symlink になっているため、
+    // 両方のパスとも実体は ~/ibis-hub-shared/ で、dist/shared symlink 経由で配信できる。
+    // クリック時は /shared/<name> 経由で server.mjs の既存静的配信ルートに任せる
+    // (= server.mjs の HTTP handler はそのまま流用、restart 不要)。
     const FILE_PATH_RE =
-      /(?<=^|[\s\(\[{<'"`])((?:\/home\/nakamura\/ibis-hub-shared\/|~\/ibis-hub-shared\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
+      /(?<=^|[\s\(\[{<'"`])((?:\/home\/nakamura\/ibis-hub-shared\/|~\/ibis-hub-shared\/|\/home\/nakamura\/\.codex\/generated_images\/|~\/\.codex\/generated_images\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
     const localFileLinkProvider = terminal.registerLinkProvider({
       provideLinks(bufferLineNumber, callback) {
         try {
@@ -479,12 +481,16 @@ export default function TerminalPane({
               },
               text: pathStr,
               activate(_event: MouseEvent, uri: string) {
-                // ~/ibis-hub-shared/foo.png または /home/nakamura/ibis-hub-shared/foo.png
-                // → /shared/foo.png に変換して新タブで開く。server.mjs の既存静的配信が
+                // ~/ibis-hub-shared/foo.png や ~/.codex/generated_images/<uuid>/foo.png 等
+                // → /shared/<rest> に変換して新タブで開く。server.mjs の既存静的配信が
                 // dist/shared -> ~/ibis-hub-shared/ の symlink を辿って配信してくれる。
+                // (~/.codex/generated_images/ → ~/ibis-hub-shared/ の symlink も WSL 側で
+                // 張ってあるので、いずれのパスも実体は同じ場所を指す)
                 const rel = uri
                   .replace(/^\/home\/nakamura\/ibis-hub-shared\//, "")
-                  .replace(/^~\/ibis-hub-shared\//, "");
+                  .replace(/^~\/ibis-hub-shared\//, "")
+                  .replace(/^\/home\/nakamura\/\.codex\/generated_images\//, "")
+                  .replace(/^~\/\.codex\/generated_images\//, "");
                 const url = `/shared/${rel.split("/").map(encodeURIComponent).join("/")}`;
                 window.open(url, "_blank", "noopener,noreferrer");
               },
