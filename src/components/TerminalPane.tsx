@@ -444,6 +444,11 @@ export default function TerminalPane({
       /(?<=^|[\s\(\[{<'"`])((?:\/|~\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
     const localFileLinkProvider = terminal.registerLinkProvider({
       provideLinks(bufferLineNumber, callback) {
+        // 一時無効化: 画像/ファイルパスのリンク化が 1;2c / マウスレポート漏れの
+        // トリガーか切り分けるため、リンクを一切提供しない。原因確定後に安全化して戻す。
+        // (`as boolean` で tsc の到達不能コード解析を避け、下の本体の型narrowingを保つ)
+        const LINKS_ENABLED = false as boolean;
+        if (!LINKS_ENABLED) { callback(undefined); return; }
         try {
           const buf = terminal.buffer.active;
           const line = buf.getLine(bufferLineNumber - 1);
