@@ -401,7 +401,10 @@ export default function TerminalPane({
     return () => clearInterval(iv);
   }, [activeTask]);
 
-  // Flush buffered data, refit, and scroll to bottom when becoming visible
+  // 2026-07-01 v0.2.52: 可視化時は「レイヤー戻すだけ」で描画済みの状態が
+  // そのまま見える設計にしたので、refit と refresh と nudgeRedraw は基本不要。
+  // scrollToBottom だけ念のため実行し、サイズが変わっている時のみ 1 フレーム
+  // 後に fit する (dimensions 変化なしなら safeFit は軽く抜ける)。
   useEffect(() => {
     visibleRef.current = isVisible;
     if (isVisible && terminalRef.current) {
@@ -410,9 +413,6 @@ export default function TerminalPane({
         terminal.write(bufferedDataRef.current);
         bufferedDataRef.current = "";
       }
-      // Defer fit + repaint to the next frame, once the re-shown pane actually
-      // has real layout dimensions (doing it while the element is still 0×0
-      // leaves it blank).
       requestAnimationFrame(() => {
         try {
           if (fitAddonRef.current) {
@@ -422,13 +422,7 @@ export default function TerminalPane({
             }
           }
         } catch {}
-        // Force a full repaint: re-showing a hidden pane does not auto-redraw,
-        // so without this it stays blank until the next keystroke/output.
-        try { terminal.refresh(0, terminal.rows - 1); } catch {}
         terminal.scrollToBottom();
-        // The agent may have drawn its frame at a different size while hidden;
-        // nudge it to repaint at the now-visible size so the input frame is right.
-        setTimeout(nudgeRedraw, 80);
       });
     }
   }, [isVisible, nudgeRedraw]);
