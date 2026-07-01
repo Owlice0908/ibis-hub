@@ -767,10 +767,8 @@ export default function TerminalPane({
       if (!alive) return;
       if (msg.type === "pty_output" && msg.id === sessionId) {
         showImageActionForPath(latestImagePathFromText(msg.data));
-        // Background task 検知: 起動と完了を pty output から捕まえて
-        // pane ヘッダーのメーターと連動させる (nakamura 要望 2026-07-01)。
-        // 複雑な同時走行は追わない — 最初の 1 個だけを追跡し、次のブロック
-        // 完了で解放。他の task が走ってても表示は 1 個ぶんだけに絞る。
+        // Background task 検知 (v0.2.49 で導入):
+        // 起動と完了を pty output から捕まえて pane ヘッダーのメーターと連動。
         const startMatch = msg.data.match(TASK_START_RE);
         if (startMatch && !activeTaskRef.current) {
           const started = { id: startMatch[1], startTime: Date.now() };
@@ -785,15 +783,11 @@ export default function TerminalPane({
           activeTaskRef.current = null;
           setActiveTask(null);
         }
-        // Buffer data when hidden, write directly when visible
-        if (!visibleRef.current) {
-          bufferedDataRef.current += msg.data;
-          // Cap buffer to prevent OOM with fast output on hidden terminals
-          if (bufferedDataRef.current.length > MAX_BUFFER_SIZE) {
-            bufferedDataRef.current = bufferedDataRef.current.slice(-MAX_BUFFER_SIZE);
-          }
-          return;
-        }
+        // 2026-07-01 v0.2.51: hidden 中もそのまま terminal.write する
+        // (以前は bufferedDataRef に貯めて可視化時に一括書き込み → 可視化が
+        // 重くなり黒い時間の原因の一つだった)。TerminalGrid で hidden pane
+        // を 100% サイズで offscreen に置くようになったので、xterm は正しい
+        // dimensions のまま描画継続 → 可視化はレイヤー切替だけで一瞬。
         pendingData += msg.data;
         if (!writeScheduled) {
           writeScheduled = true;

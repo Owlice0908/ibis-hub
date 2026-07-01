@@ -193,7 +193,22 @@ export default function TerminalGrid({
     .map((id) => {
       const session = sessions.find((s) => s.id === id);
       return (
-        <div key={id} style={{ position: "absolute", left: "-9999px", width: "1px", height: "1px", overflow: "hidden" }}>
+        <div key={id} style={{
+          // 2026-07-01: 従来は 1px × 1px offscreen だったため xterm が 1×1 で
+          // buffer を描画し、可視化時に「正しいサイズに fit → refresh → 貯めた
+          // 出力の一括 write」が全部走って画面が黒く見える時間になっていた。
+          // 100% サイズで parent (visible 側の layout root) と同じ dimensions
+          // を保ったまま offscreen に置くことで、xterm は正しい cols/rows で
+          // 描画継続 → 可視化はレイヤー切替だけで一瞬。CPU 負荷は画面外 clip
+          // により大きくは増えない。
+          position: "absolute",
+          left: "-9999px",
+          top: 0,
+          width: "100%",
+          height: "100%",
+          overflow: "hidden",
+          pointerEvents: "none",
+        }}>
           <TerminalPane
             sessionId={id}
             sessionName={session?.name || "Session"}
