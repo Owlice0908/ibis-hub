@@ -481,13 +481,15 @@ export default function TerminalPane({
         requestAnimationFrame(() => searchInputRef.current?.focus());
         return false;
       }
-      // 2026-06-26 Esc 単独で入力中断:
-      //   現状の Esc は xterm.js のデフォルトで \x1b として PTY に流れるが、
-      //   それだけだと claude/codex の「行クリア」が確実に発火しないため、
-      //   \x1b の直後に \x15 (Ctrl+U / unix-line-discard) も送って readline の
-      //   「カーソル前の入力をクリア」を強制発火させる。応答 streaming 中の
-      //   Esc は claude/codex 側が \x1b 単独受信で中断するので、Ctrl+U が
-      //   余計に送られても入力プロンプトに戻ったタイミングで no-op になる。
+      // Esc: Claude/codex の中断・キャンセル要求を PTY に流す。
+      //   2026-06-26 版は \x1b\x15 (Esc + Ctrl+U) を送って「行クリア強制発火」
+      //   を狙っていたが、Ctrl+U が余計に付くと **送信後の応答中断** で
+      //   Claude/codex 側の Esc 判定を上書きしてしまい効かないケースがあった
+      //   (nakamura 指摘 2026-07-01)。
+      //   Esc 単発だと Claude/codex は状況判定して:
+      //     - 入力中 → 入力バッファのキャンセル
+      //     - 応答生成中 → "Escape to interrupt" → もう一度 Esc で確定中断
+      //   が両方効く。余計なバイトを付けない。
       if (
         e.type === "keydown" &&
         e.key === "Escape" &&
@@ -495,7 +497,7 @@ export default function TerminalPane({
         !e.isComposing
       ) {
         e.preventDefault();
-        wsSend({ type: "write", id: sessionId, data: "\x1b\x15" });
+        wsSend({ type: "write", id: sessionId, data: "\x1b" });
         return false;
       }
       // Shift+Enter → insert a newline instead of submitting. Sends ESC+CR,
