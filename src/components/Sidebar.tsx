@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import type { Session, LayoutMode, ThemeMode } from "../types";
-import logoUrl from "../assets/logo.png";
+import logoUrl from "../assets/logo-refined-balanced.png";
 import NotificationBadge from "./NotificationBadge";
 
 interface SidebarProps {
@@ -76,7 +76,7 @@ export default function Sidebar({
       <div className="p-4 border-b border-border flex items-center justify-between">
         <div>
           <h1 className="text-lg font-bold text-text tracking-tight flex items-center gap-1.5">
-            <img src={logoUrl} alt="" className={`w-5 h-5 ${theme === "dark" ? "invert brightness-200" : ""}`} />
+            <img src={logoUrl} alt="" className="w-5 h-5" />
             Ibis Hub
           </h1>
           <p className="text-xs text-text-muted mt-0.5">Session Manager</p>

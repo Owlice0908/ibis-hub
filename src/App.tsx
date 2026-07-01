@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import "./App.css";
-import logoUrl from "./assets/logo.png";
+import logoUrl from "./assets/logo-refined-balanced.png";
 import Sidebar from "./components/Sidebar";
 import SplashScreen from "./components/SplashScreen";
 import TerminalGrid from "./components/TerminalGrid";
@@ -460,7 +460,7 @@ function App() {
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
               <div className="flex items-center justify-center gap-4 mb-3">
-                <img src={logoUrl} alt="Ibis Hub" className={`h-14 w-auto ${theme === "dark" ? "invert brightness-200" : ""}`} />
+                <img src={logoUrl} alt="Ibis Hub" className="h-10 w-auto" />
                 <h2 className="text-5xl font-semibold text-text leading-none">
                   Ibis Hub
                 </h2>

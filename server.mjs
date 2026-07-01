@@ -1,6 +1,6 @@
 import { WebSocketServer } from "ws";
 import { createServer } from "http";
-import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, openSync, readSync, closeSync, renameSync, realpathSync } from "fs";
+import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, openSync, readSync, closeSync, renameSync, realpathSync, symlinkSync } from "fs";
 import { join, extname, resolve as pathResolve, sep as pathSep } from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
@@ -9,6 +9,44 @@ import { execSync, spawnSync, spawn } from "child_process";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const DIST_DIR = join(__dirname, "dist");
+const SHARED_DIR = join(homedir(), "ibis-hub-shared");
+try {
+  mkdirSync(DIST_DIR, { recursive: true });
+  const sharedLink = join(DIST_DIR, "shared");
+  if (!existsSync(sharedLink)) symlinkSync(SHARED_DIR, sharedLink, "dir");
+} catch {}
+const GENERATED_IMAGE_RE =
+  /(?<=^|[\s\(\[{<'"`])((?:\/home\/nakamura\/ibis-hub-shared\/|~\/ibis-hub-shared\/|\/home\/nakamura\/\.codex\/generated_images\/|~\/\.codex\/generated_images\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp))/gi;
+
+function latestGeneratedImagePathFromText(text) {
+  GENERATED_IMAGE_RE.lastIndex = 0;
+  let match;
+  let latest = "";
+  while ((match = GENERATED_IMAGE_RE.exec(text)) !== null) latest = match[1];
+  return latest;
+}
+
+function latestSharedImagePath() {
+  const imageExt = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
+  let latest = null;
+  const walk = (dir) => {
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile() && imageExt.test(entry.name)) {
+        try {
+          const mtime = statSync(full).mtimeMs;
+          if (!latest || mtime > latest.mtime) latest = { path: full, mtime };
+        } catch {}
+      }
+    }
+  };
+  walk(SHARED_DIR);
+  return latest?.path || "";
+}
 // Namespace per-instance state by port so a second instance (e.g. PORT=9101)
 // keeps its own session list / scrollback and doesn't fight with the main one.
 const INSTANCE_SUFFIX = (process.env.PORT && process.env.PORT !== "9100") ? `.${process.env.PORT}` : "";
@@ -628,6 +666,10 @@ wss.on("connection", (ws, req) => {
           // Send scrollback only on first attach (prevent duplicate output)
           if (!alreadySubscribed && s.scrollback) {
             ws.send(JSON.stringify({ type: "pty_output", id: msg.id, data: sanitizeScrollbackForReplay(s.scrollback) }));
+          }
+          const latestImage = latestGeneratedImagePathFromText(s.scrollback || "") || (s.sessionType === "chatgpt" ? latestSharedImagePath() : "");
+          if (latestImage) {
+            ws.send(JSON.stringify({ type: "generated_image", id: msg.id, path: latestImage }));
           }
           // Tell the client the current auto-Yes state so the toggle reflects
           // reality (e.g. shows green) after a reload/reconnect.
