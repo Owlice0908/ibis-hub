@@ -174,6 +174,7 @@ export default function TerminalGrid({
       <TerminalPane
         sessionId={id}
         sessionName={session?.name || "Session"}
+        sessionType={session?.session_type}
         showControls={visibleCount > 1}
         isVisible={true}
         theme={theme}
@@ -196,6 +197,7 @@ export default function TerminalGrid({
           <TerminalPane
             sessionId={id}
             sessionName={session?.name || "Session"}
+            sessionType={session?.session_type}
             showControls={false}
             isVisible={false}
             theme={theme}
@@ -221,6 +223,7 @@ export default function TerminalGrid({
             key={focusedId}
             sessionId={focusedId}
             sessionName={mainSession?.name || "Session"}
+            sessionType={mainSession?.session_type}
             showControls={false}
             isVisible={true}
             theme={theme}
@@ -238,6 +241,7 @@ export default function TerminalGrid({
                 <TerminalPane
                   sessionId={id}
                   sessionName={session?.name || "Session"}
+                  sessionType={session?.session_type}
                   showControls={true}
                   isVisible={true}
                   theme={theme}

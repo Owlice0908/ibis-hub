@@ -146,6 +146,8 @@ const LIGHT_THEME = {
 interface TerminalPaneProps {
   sessionId: string;
   sessionName: string;
+  /** "claude" | "chatgpt" | "terminal" | 他。画像プレビューの発火判定に使う。 */
+  sessionType?: string;
   showControls: boolean;
   isVisible: boolean;
   theme: ThemeMode;
@@ -160,6 +162,7 @@ interface TerminalPaneProps {
 export default function TerminalPane({
   sessionId,
   sessionName,
+  sessionType,
   showControls,
   isVisible,
   theme,
@@ -186,6 +189,12 @@ export default function TerminalPane({
   const [imageAction, setImageAction] = useState<ImageAction | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
+  // このセッションで表示した画像の履歴 (新しい順、先頭が最新)。
+  // 「やっぱさっきのがいい」等の指示のため直近何枚かのサムネイルを見せる用途。
+  // sessionId (= pane 単位) にスコープ、他セッションとは共有しない。
+  const [imageHistory, setImageHistory] = useState<ImageAction[]>([]);
+  // プレビューの最小化状態。true = 右下にピル型バッジで畳む、false = 通常表示。
+  const [previewMinimized, setPreviewMinimized] = useState(false);
   const dragDepthRef = useRef(0);
   const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB
   // Cap buffered output for hidden panes. Kept modest so many idle background
@@ -194,12 +203,20 @@ export default function TerminalPane({
 
   const showImageActionForPath = useCallback((path: string) => {
     if (!path) return;
-    setImageAction({
+    const next: ImageAction = {
       url: sharedUrlForGeneratedPath(path),
       path,
       fileName: fileNameFromPath(path),
-    });
+    };
+    setImageAction(next);
     setPreviewFailed(false);
+    // 新しい画像が来たら最小化を解除して表示に戻す(ユーザーは新しい生成を見たい)。
+    setPreviewMinimized(false);
+    // 履歴に追加 (同一 path があれば先頭に押し出し、重複除去)。直近 20 枚まで保持。
+    setImageHistory((prev) => {
+      const filtered = prev.filter((item) => item.path !== path);
+      return [next, ...filtered].slice(0, 20);
+    });
   }, []);
 
   const scanTerminalForLatestImage = useCallback(() => {
@@ -597,11 +614,18 @@ export default function TerminalPane({
       termRef.current.removeChild(termRef.current.firstChild);
     }
     terminal.open(termRef.current);
-    const imageScanTimers = [
+    // scanTerminalForLatestImage は「そのセッションの scrollback にある画像パスを拾う」=
+    // 自セッションの出力にしか反応しないので全 pane で走らせて OK。
+    // 一方 loadLatestSharedImage は SHARED_DIR 全体の最新画像を返してしまうので、
+    // ChatGPT (codex) セッションのみで発火させる (Claude/Terminal で他人が生成した
+    // 画像プレビューが勝手に出るのを防ぐ)。
+    const imageScanTimers: ReturnType<typeof setTimeout>[] = [
       setTimeout(scanTerminalForLatestImage, 300),
       setTimeout(scanTerminalForLatestImage, 1000),
-      setTimeout(loadLatestSharedImage, 1200),
     ];
+    if (sessionType === "chatgpt") {
+      imageScanTimers.push(setTimeout(loadLatestSharedImage, 1200));
+    }
 
     // Initial fit: retry until container has real dimensions (Grid layout
     // may start at width=0 and expand later, causing cols=1 → vertical text).
@@ -882,7 +906,7 @@ export default function TerminalPane({
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [sessionId, handleResize, wsSend, wsOnMessage, nudgeRedraw, scanTerminalForLatestImage, showImageActionForPath, loadLatestSharedImage]);
+  }, [sessionId, sessionType, handleResize, wsSend, wsOnMessage, nudgeRedraw, scanTerminalForLatestImage, showImageActionForPath, loadLatestSharedImage]);
 
   return (
     <div
@@ -1036,7 +1060,7 @@ export default function TerminalPane({
           </div>
         </div>
       )}
-      {imageAction && previewOpen && (
+      {imageAction && previewOpen && !previewMinimized && (
         <div
           className="absolute inset-0 z-30 bg-bg/90 flex flex-col"
           onClick={() => setPreviewOpen(false)}
@@ -1070,6 +1094,16 @@ export default function TerminalPane({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  setPreviewMinimized(true);
+                }}
+                className="text-xs text-text-muted hover:text-text px-2 py-1 rounded hover:bg-surface-hover"
+                title="最小化 (右下バッジに畳む)"
+              >
+                _
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
                   setPreviewOpen(false);
                 }}
                 className="text-xs text-text-muted hover:text-danger px-1.5 py-1 rounded hover:bg-surface-hover"
@@ -1099,7 +1133,62 @@ export default function TerminalPane({
               />
             )}
           </div>
+          {imageHistory.length > 1 && (
+            <div
+              className="shrink-0 bg-surface border-t border-border px-3 py-2 overflow-x-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-text-muted shrink-0 pr-1">履歴</span>
+                {imageHistory.map((item) => {
+                  const isActive = item.path === imageAction.path;
+                  return (
+                    <button
+                      key={item.path}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setImageAction(item);
+                        setPreviewFailed(false);
+                      }}
+                      className={`relative shrink-0 rounded-md overflow-hidden border transition ${
+                        isActive
+                          ? "border-accent ring-1 ring-accent"
+                          : "border-border hover:border-accent/60"
+                      }`}
+                      title={item.fileName}
+                      style={{ width: 56, height: 56 }}
+                    >
+                      <img
+                        src={item.url}
+                        alt={item.fileName}
+                        className="w-full h-full object-cover"
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
+      )}
+      {imageAction && previewOpen && previewMinimized && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setPreviewMinimized(false);
+          }}
+          className="absolute bottom-3 right-3 z-30 flex items-center gap-2 bg-surface border border-border hover:border-accent rounded-full pl-1 pr-3 py-1 shadow-lg text-xs text-text"
+          title="プレビューを開く"
+        >
+          <img
+            src={imageAction.url}
+            alt=""
+            className="w-6 h-6 rounded-full object-cover"
+          />
+          <span className="truncate max-w-[120px]">
+            {imageHistory.length > 1 ? `${imageHistory.length} 枚` : imageAction.fileName}
+          </span>
+        </button>
       )}
       <div ref={termRef} className="flex-1 min-h-0 min-w-0 overflow-hidden" />
       {dragOver && (
