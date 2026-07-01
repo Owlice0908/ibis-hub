@@ -14,6 +14,15 @@ import {
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const IS_MAC = typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
+const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
+const FILE_PATH_RE =
+  /(?<=^|[\s\(\[{<'"`])((?:\/home\/nakamura\/ibis-hub-shared\/|~\/ibis-hub-shared\/|\/home\/nakamura\/\.codex\/generated_images\/|~\/\.codex\/generated_images\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
+
+type ImageAction = {
+  url: string;
+  path: string;
+  fileName: string;
+};
 
 // ──────────────────────────────────────────────────────────────────────
 // クリップボード書込みヘルパ (2026-06-26 復元、元実装は 7059895):
@@ -49,6 +58,43 @@ function fallbackCopy(text: string) {
     document.execCommand("copy");
     document.body.removeChild(ta);
   } catch { /* leave clipboard unchanged */ }
+}
+
+function sharedUrlForGeneratedPath(uri: string) {
+  const rel = uri
+    .replace(/^\/home\/nakamura\/ibis-hub-shared\//, "")
+    .replace(/^~\/ibis-hub-shared\//, "")
+    .replace(/^\/home\/nakamura\/\.codex\/generated_images\//, "")
+    .replace(/^~\/\.codex\/generated_images\//, "");
+  const origin =
+    window.location.protocol === "http:" || window.location.protocol === "https:"
+      ? window.location.origin
+      : "http://127.0.0.1:9100";
+  return `${origin}/file?path=${encodeURIComponent(`/home/nakamura/ibis-hub-shared/${rel}`)}`;
+}
+
+function fileNameFromPath(path: string) {
+  return decodeURIComponent(path.split(/[\\/]/).filter(Boolean).pop() || "generated-image.png");
+}
+
+function latestImagePathFromText(text: string) {
+  FILE_PATH_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let latestImagePath = "";
+  while ((match = FILE_PATH_RE.exec(text)) !== null) {
+    if (IMAGE_EXT_RE.test(match[1])) latestImagePath = match[1];
+  }
+  return latestImagePath;
+}
+
+function downloadSharedFile(url: string, fileName: string) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.rel = "noopener noreferrer";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 const DARK_THEME = {
@@ -137,11 +183,45 @@ export default function TerminalPane({
   const [dragOver, setDragOver] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const [imageAction, setImageAction] = useState<ImageAction | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewFailed, setPreviewFailed] = useState(false);
   const dragDepthRef = useRef(0);
   const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB
   // Cap buffered output for hidden panes. Kept modest so many idle background
   // sessions don't balloon memory (a cause of the app feeling heavy).
   const MAX_BUFFER_SIZE = 2 * 1024 * 1024; // 2MB max buffer for hidden terminals
+
+  const showImageActionForPath = useCallback((path: string) => {
+    if (!path) return;
+    setImageAction({
+      url: sharedUrlForGeneratedPath(path),
+      path,
+      fileName: fileNameFromPath(path),
+    });
+    setPreviewFailed(false);
+  }, []);
+
+  const scanTerminalForLatestImage = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const buffer = terminal.buffer.active;
+    const start = Math.max(0, buffer.baseY + buffer.cursorY - 200);
+    let text = "";
+    for (let i = start; i <= buffer.baseY + buffer.cursorY; i++) {
+      text += `${buffer.getLine(i)?.translateToString(true) || ""}\n`;
+    }
+    showImageActionForPath(latestImagePathFromText(text));
+  }, [showImageActionForPath]);
+
+  const loadLatestSharedImage = useCallback(async () => {
+    try {
+      const res = await fetch("/shared/latest-image.json", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (typeof data?.path === "string") showImageActionForPath(data.path);
+    } catch {}
+  }, [showImageActionForPath]);
 
   // Renderer: we use xterm's built-in DOM renderer (no addon). In this app's
   // WKWebView the accelerated renderers (WebGL/Canvas-beta) each broke something
@@ -442,12 +522,8 @@ export default function TerminalPane({
     // しまい、クリックすると ibis hub の index.html が開いてしまう挙動になっていた。
     // 2026-06-30 検出範囲を **~/ibis-hub-shared/ 配下** + **~/.codex/generated_images/ 配下**
     // に絞ったので、ANSI 1;2c 系レスポンス文字列に偶然マッチして誤検出する確率は事実上ゼロ。
-    // ~/.codex/generated_images/ は ~/ibis-hub-shared/ への symlink になっているため、
-    // 両方のパスとも実体は ~/ibis-hub-shared/ で、dist/shared symlink 経由で配信できる。
-    // クリック時は /shared/<name> 経由で server.mjs の既存静的配信ルートに任せる
-    // (= server.mjs の HTTP handler はそのまま流用、restart 不要)。
-    const FILE_PATH_RE =
-      /(?<=^|[\s\(\[{<'"`])((?:\/home\/nakamura\/ibis-hub-shared\/|~\/ibis-hub-shared\/|\/home\/nakamura\/\.codex\/generated_images\/|~\/\.codex\/generated_images\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
+    // クリック時は server.mjs の /file?path=... に通し、画像だけは軽量な
+    // プレビュー/ダウンロードUIを出す。
     const localFileLinkProvider = terminal.registerLinkProvider({
       provideLinks(bufferLineNumber, callback) {
         try {
@@ -481,17 +557,11 @@ export default function TerminalPane({
               },
               text: pathStr,
               activate(_event: MouseEvent, uri: string) {
-                // ~/ibis-hub-shared/foo.png や ~/.codex/generated_images/<uuid>/foo.png 等
-                // → /shared/<rest> に変換して新タブで開く。server.mjs の既存静的配信が
-                // dist/shared -> ~/ibis-hub-shared/ の symlink を辿って配信してくれる。
-                // (~/.codex/generated_images/ → ~/ibis-hub-shared/ の symlink も WSL 側で
-                // 張ってあるので、いずれのパスも実体は同じ場所を指す)
-                const rel = uri
-                  .replace(/^\/home\/nakamura\/ibis-hub-shared\//, "")
-                  .replace(/^~\/ibis-hub-shared\//, "")
-                  .replace(/^\/home\/nakamura\/\.codex\/generated_images\//, "")
-                  .replace(/^~\/\.codex\/generated_images\//, "");
-                const url = `/shared/${rel.split("/").map(encodeURIComponent).join("/")}`;
+                const url = sharedUrlForGeneratedPath(uri);
+                if (IMAGE_EXT_RE.test(uri)) {
+                  showImageActionForPath(uri);
+                  return;
+                }
                 window.open(url, "_blank", "noopener,noreferrer");
               },
               hover() {/* no-op */},
@@ -527,6 +597,11 @@ export default function TerminalPane({
       termRef.current.removeChild(termRef.current.firstChild);
     }
     terminal.open(termRef.current);
+    const imageScanTimers = [
+      setTimeout(scanTerminalForLatestImage, 300),
+      setTimeout(scanTerminalForLatestImage, 1000),
+      setTimeout(loadLatestSharedImage, 1200),
+    ];
 
     // Initial fit: retry until container has real dimensions (Grid layout
     // may start at width=0 and expand later, causing cols=1 → vertical text).
@@ -607,6 +682,7 @@ export default function TerminalPane({
     const unsubscribe = wsOnMessage((msg: any) => {
       if (!alive) return;
       if (msg.type === "pty_output" && msg.id === sessionId) {
+        showImageActionForPath(latestImagePathFromText(msg.data));
         // Buffer data when hidden, write directly when visible
         if (!visibleRef.current) {
           bufferedDataRef.current += msg.data;
@@ -621,6 +697,9 @@ export default function TerminalPane({
           writeScheduled = true;
           requestAnimationFrame(flushWrite);
         }
+      }
+      if (msg.type === "generated_image" && msg.id === sessionId && typeof msg.path === "string") {
+        showImageActionForPath(msg.path);
       }
       if (msg.type === "session_exited" && msg.id === sessionId) {
         terminal.write("\r\n\x1b[90m[Session ended]\x1b[0m\r\n");
@@ -785,6 +864,7 @@ export default function TerminalPane({
 
     return () => {
       alive = false;
+      imageScanTimers.forEach(clearTimeout);
       redrawNudges.forEach(clearTimeout);
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       observer.disconnect();
@@ -802,7 +882,7 @@ export default function TerminalPane({
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [sessionId, handleResize, wsSend, wsOnMessage, nudgeRedraw]);
+  }, [sessionId, handleResize, wsSend, wsOnMessage, nudgeRedraw, scanTerminalForLatestImage, showImageActionForPath, loadLatestSharedImage]);
 
   return (
     <div
@@ -913,6 +993,112 @@ export default function TerminalPane({
             className="text-xs text-text-muted hover:text-danger px-1"
             title="閉じる (Esc)"
           >✕</button>
+        </div>
+      )}
+      {imageAction && (
+        <div className="absolute top-9 left-2 right-2 z-20 flex items-center justify-between gap-2 bg-surface border border-border rounded-md shadow-lg px-2 py-1.5">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-text truncate">{imageAction.fileName}</div>
+            <div className="text-[11px] text-text-muted truncate">生成画像</div>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={() => {
+                setPreviewFailed(false);
+                setPreviewOpen(true);
+              }}
+              className="text-xs text-text hover:text-accent px-2 py-1 rounded hover:bg-surface-hover"
+              title="画像をプレビュー"
+            >
+              プレビュー
+            </button>
+            <button
+              onClick={() => downloadSharedFile(imageAction.url, imageAction.fileName)}
+              className="text-xs text-bg bg-accent hover:bg-accent-hover px-2 py-1 rounded font-medium"
+              title="保存先を選んでダウンロード"
+            >
+              ダウンロード
+            </button>
+            <button
+              onClick={() => copyToClipboard(imageAction.path)}
+              className="text-xs text-text-muted hover:text-text px-2 py-1 rounded hover:bg-surface-hover"
+              title="ファイルパスをコピー"
+            >
+              パス
+            </button>
+            <button
+              onClick={() => setImageAction(null)}
+              className="text-xs text-text-muted hover:text-danger px-1.5 py-1 rounded hover:bg-surface-hover"
+              title="閉じる"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+      {imageAction && previewOpen && (
+        <div
+          className="absolute inset-0 z-30 bg-bg/90 flex flex-col"
+          onClick={() => setPreviewOpen(false)}
+        >
+          <div className="flex items-center justify-between gap-2 bg-surface border-b border-border px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-text truncate">{imageAction.fileName}</div>
+              <div className="text-[11px] text-text-muted truncate">{imageAction.path}</div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  downloadSharedFile(imageAction.url, imageAction.fileName);
+                }}
+                className="text-xs text-bg bg-accent hover:bg-accent-hover px-2 py-1 rounded font-medium"
+                title="保存先を選んでダウンロード"
+              >
+                ダウンロード
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  copyToClipboard(imageAction.url);
+                }}
+                className="text-xs text-text-muted hover:text-text px-2 py-1 rounded hover:bg-surface-hover"
+                title="プレビューURLをコピー"
+              >
+                URL
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPreviewOpen(false);
+                }}
+                className="text-xs text-text-muted hover:text-danger px-1.5 py-1 rounded hover:bg-surface-hover"
+                title="閉じる"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+          <div className="flex-1 min-h-0 flex items-center justify-center p-3" onClick={(e) => e.stopPropagation()}>
+            {previewFailed ? (
+              <div className="max-w-full rounded-md border border-border bg-surface px-4 py-3 text-sm text-text">
+                <div className="font-medium mb-1">画像を読み込めませんでした</div>
+                <button
+                  onClick={() => copyToClipboard(imageAction.url)}
+                  className="text-xs text-accent hover:text-accent-hover"
+                >
+                  URLをコピー
+                </button>
+              </div>
+            ) : (
+              <img
+                src={imageAction.url}
+                alt={imageAction.fileName}
+                className="max-w-full max-h-full object-contain rounded-md"
+                onError={() => setPreviewFailed(true)}
+              />
+            )}
+          </div>
         </div>
       )}
       <div ref={termRef} className="flex-1 min-h-0 min-w-0 overflow-hidden" />
