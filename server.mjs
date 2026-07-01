@@ -323,6 +323,29 @@ const httpServer = createServer((req, res) => {
   if (req.url && req.url.startsWith("/file?")) {
     return handleFileRequest(req, res);
   }
+  // /shared/latest-image.json: SHARED_DIR 内の最新画像パスと配信 URL を返す。
+  //   TerminalPane が画像プレビューモーダルの補助として叩く。
+  //   このエンドポイントが無いと Frontend が 404 を握って何も出せず「画像リンクが
+  //   ChatGPT の出力に流れる前に閉じるとプレビューが復元できない」となるので、
+  //   配布 v0.2.46 で追加。
+  if (req.url === "/shared/latest-image.json") {
+    try {
+      const abs = latestSharedImagePath();
+      if (!abs) {
+        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ path: null, url: null }));
+        return;
+      }
+      const rel = abs.startsWith(SHARED_DIR + "/") ? abs.slice(SHARED_DIR.length + 1) : abs.split("/").pop();
+      const url = "/shared/" + rel.split("/").map(encodeURIComponent).join("/");
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ path: abs, url }));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
   let filePath = join(DIST_DIR, req.url === "/" ? "index.html" : req.url);
   if (!filePath.startsWith(DIST_DIR)) {
     res.writeHead(403);
