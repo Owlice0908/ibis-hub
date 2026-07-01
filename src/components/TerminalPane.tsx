@@ -18,6 +18,46 @@ const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|bmp)$/i;
 const FILE_PATH_RE =
   /(?<=^|[\s\(\[{<'"`])((?:\/home\/nakamura\/ibis-hub-shared\/|~\/ibis-hub-shared\/|\/home\/nakamura\/\.codex\/generated_images\/|~\/\.codex\/generated_images\/)[^\s\x00-\x1f<>"|]+\.(?:png|jpe?g|gif|webp|bmp|pdf))/gi;
 
+// Claude Code の Bash run_in_background で起動された task を pty 出力から捕捉。
+// 起動時: "Command running in background with ID: <hexish>" が Tool result 内に出る
+// 完了時: <task-notification>...<task-id>xxx</task-id>...<status>completed</status>...
+//         </task-notification> の user turn が続く行に出る
+const TASK_START_RE = /Command running in background with ID:\s*([A-Za-z0-9_-]+)/;
+const TASK_DONE_RE =
+  /<task-notification>[\s\S]*?<task-id>\s*([A-Za-z0-9_-]+)\s*<\/task-id>[\s\S]*?<status>\s*(?:completed|failed|cancelled)\s*<\/status>/;
+
+// 過去実測の task 実行時間を指数移動平均で保持。全 pane 共有、session_type 別
+// に分けないのは「background task の性格が session_type にあまり依存しない」
+// ため(ほぼ全部 gh run watch 系)。alpha=0.3 で新しい実測を強めに反映。
+const TASK_AVG_KEY = "ibis-task-avg";
+function loadTaskAvgMs(): { avgMs: number; count: number } {
+  try {
+    const raw = localStorage.getItem(TASK_AVG_KEY);
+    if (!raw) return { avgMs: 0, count: 0 };
+    const parsed = JSON.parse(raw);
+    return {
+      avgMs: typeof parsed.avgMs === "number" ? parsed.avgMs : 0,
+      count: typeof parsed.count === "number" ? parsed.count : 0,
+    };
+  } catch {
+    return { avgMs: 0, count: 0 };
+  }
+}
+function updateTaskAvgMs(durationMs: number) {
+  try {
+    const prev = loadTaskAvgMs();
+    const alpha = prev.count === 0 ? 1 : 0.3;
+    const nextAvg = prev.avgMs * (1 - alpha) + durationMs * alpha;
+    localStorage.setItem(TASK_AVG_KEY, JSON.stringify({ avgMs: nextAvg, count: prev.count + 1 }));
+  } catch {}
+}
+function formatMs(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 type ImageAction = {
   url: string;
   path: string;
@@ -195,6 +235,14 @@ export default function TerminalPane({
   const [imageHistory, setImageHistory] = useState<ImageAction[]>([]);
   // プレビューの最小化状態。true = 右下にピル型バッジで畳む、false = 通常表示。
   const [previewMinimized, setPreviewMinimized] = useState(false);
+  // 「Command running in background with ID: xxx」で始まって
+  // <task-notification>...<status>completed</status>...</task-notification> で
+  // 終わる background task を捕まえて、pane ヘッダーに経過時間 + 進捗メーターを出す。
+  // 過去平均を localStorage で持ち、進行率 = 経過 / 平均 で色分け表示。
+  const [activeTask, setActiveTask] = useState<{ id: string; startTime: number } | null>(null);
+  const activeTaskRef = useRef<{ id: string; startTime: number } | null>(null);
+  activeTaskRef.current = activeTask;
+  const [taskElapsedMs, setTaskElapsedMs] = useState(0);
   const dragDepthRef = useRef(0);
   const MAX_UPLOAD_SIZE = 100 * 1024 * 1024; // 100MB
   // Cap buffered output for hidden panes. Kept modest so many idle background
@@ -342,6 +390,16 @@ export default function TerminalPane({
       window.removeEventListener("ibis-native-drop", handleClear);
     };
   }, []);
+
+  // 1 秒毎に tick して taskElapsedMs を更新 → メーターが動く。
+  // activeTask が null の間は interval を起動しない (無駄 rerender 防止)。
+  useEffect(() => {
+    if (!activeTask) return;
+    const iv = setInterval(() => {
+      setTaskElapsedMs(Date.now() - activeTask.startTime);
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [activeTask]);
 
   // Flush buffered data, refit, and scroll to bottom when becoming visible
   useEffect(() => {
@@ -707,6 +765,24 @@ export default function TerminalPane({
       if (!alive) return;
       if (msg.type === "pty_output" && msg.id === sessionId) {
         showImageActionForPath(latestImagePathFromText(msg.data));
+        // Background task 検知: 起動と完了を pty output から捕まえて
+        // pane ヘッダーのメーターと連動させる (nakamura 要望 2026-07-01)。
+        // 複雑な同時走行は追わない — 最初の 1 個だけを追跡し、次のブロック
+        // 完了で解放。他の task が走ってても表示は 1 個ぶんだけに絞る。
+        const startMatch = msg.data.match(TASK_START_RE);
+        if (startMatch && !activeTaskRef.current) {
+          const started = { id: startMatch[1], startTime: Date.now() };
+          activeTaskRef.current = started;
+          setActiveTask(started);
+          setTaskElapsedMs(0);
+        }
+        const doneMatch = msg.data.match(TASK_DONE_RE);
+        if (doneMatch && activeTaskRef.current && activeTaskRef.current.id === doneMatch[1]) {
+          const duration = Date.now() - activeTaskRef.current.startTime;
+          updateTaskAvgMs(duration);
+          activeTaskRef.current = null;
+          setActiveTask(null);
+        }
         // Buffer data when hidden, write directly when visible
         if (!visibleRef.current) {
           bufferedDataRef.current += msg.data;
@@ -944,8 +1020,44 @@ export default function TerminalPane({
         },
       } : {})}
     >
-      <div className="flex items-center justify-between px-2 py-1 bg-surface border-b border-border">
-        <span className="text-sm text-text-muted font-medium truncate">{sessionName}</span>
+      <div className="flex items-center justify-between px-2 py-1 bg-surface border-b border-border gap-2">
+        <span className="text-sm text-text-muted font-medium truncate shrink">{sessionName}</span>
+        {activeTask && (() => {
+          // 過去平均を基準に進行率を算出。平均が無ければ pulse アニメで動きを出す。
+          const avg = loadTaskAvgMs();
+          const pct = avg.avgMs > 0 ? Math.min(100, (taskElapsedMs / avg.avgMs) * 100) : 20;
+          const barColor =
+            avg.avgMs > 0 && taskElapsedMs > avg.avgMs * 1.2 ? "bg-danger" :
+            avg.avgMs > 0 && taskElapsedMs > avg.avgMs ? "bg-warning" :
+            "bg-accent";
+          const remaining = avg.avgMs > 0 ? Math.max(0, avg.avgMs - taskElapsedMs) : 0;
+          return (
+            <div
+              className="flex items-center gap-1.5 shrink min-w-0"
+              title={
+                avg.avgMs > 0
+                  ? `Background task ${activeTask.id}\n経過 ${formatMs(taskElapsedMs)} / 過去平均 ${formatMs(avg.avgMs)}\n残り推定 ${formatMs(remaining)}`
+                  : `Background task ${activeTask.id}\n経過 ${formatMs(taskElapsedMs)} (過去平均なし)`
+              }
+            >
+              <span className="text-[11px] font-mono text-text-muted tabular-nums whitespace-nowrap">
+                {formatMs(taskElapsedMs)}
+                {avg.avgMs > 0 && (
+                  <span className="text-text-muted/60">
+                    {" / "}
+                    {formatMs(avg.avgMs)}
+                  </span>
+                )}
+              </span>
+              <div className="w-20 h-1.5 bg-surface-hover rounded-full overflow-hidden shrink-0">
+                <div
+                  className={`h-full ${barColor} transition-all duration-300 ${avg.avgMs === 0 ? "animate-pulse" : ""}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </div>
+          );
+        })()}
         <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={() => wsSend({ type: "pick_files", sessionId })}
