@@ -119,6 +119,44 @@ html, body, #root {
      でも scrollbar track が常時見えるようにするための最終ハック。 */
   -webkit-appearance: none !important;
 }
+/* 2026-07-02 v0.2.58: Claude Code (Alt Screen Buffer 使用) 側でも
+   スクロールバーの track/thumb を疑似要素で常時描画する最終手段。
+   実際の Alt Buffer では scrollback が発生しないので ::-webkit-scrollbar
+   は WebKit によって描画スキップされるため、ここで track / thumb を
+   自前で描いて視覚的統一を確保する (codex 側の実 scrollbar とほぼ同じ
+   見た目)。pointer-events: none で操作をブロックしない。 */
+.xterm-viewport {
+  position: relative;
+}
+.xterm-viewport::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  background: #1a1e26;
+  pointer-events: none;
+  z-index: 4;
+}
+.xterm-viewport::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  right: 2px;
+  width: 8px;
+  height: 60px;
+  background: #4a5563;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 5;
+}
+[data-theme="light"] .xterm-viewport::before {
+  background: #eef0f3;
+}
+[data-theme="light"] .xterm-viewport::after {
+  background: #c8ccd4;
+}
 .xterm-viewport::-webkit-scrollbar {
   width: 12px;
   background: #1a1e26;
