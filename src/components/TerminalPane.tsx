@@ -822,6 +822,18 @@ export default function TerminalPane({
         // Alt Buffer が無効なので Claude はここで履歴を消す必要が無く、
         // 消されると nakamura が遡って読めなくなる。
         msg.data = msg.data.replace(/\x1b\[3J/g, "");
+        // v0.2.70: Claude Code の TUI 再描画による scroll 位置リセット対策
+        //   \x1b[2J (全画面クリア) → \x1b[J (カーソル位置以降クリア) に変換
+        //     過去の scrollback 上に描画されたコンテンツを保護
+        //   \x1b[H (カーソルを 1,1 に絶対移動) → \n (改行) に変換
+        //     Alt Buffer 前提の「画面左上に飛んで上書き」を「新しい行から
+        //     描画継続」に置き換える。副作用として Claude の入力枠が
+        //     何度も描画されるが、scroll 位置は保たれる。
+        //   \x1b[<n>;<m>H (任意位置に絶対移動) は残す。行内の位置調整に
+        //     使われるので変換すると Claude UI が完全に壊れる。
+        msg.data = msg.data
+          .replace(/\x1b\[2J/g, "\x1b[J")
+          .replace(/\x1b\[H(?![^\x1b]*[?;])/g, "\n");
         showImageActionForPath(latestImagePathFromText(msg.data));
         // Background task 検知 (v0.2.49 で導入):
         // 起動と完了を pty output から捕まえて pane ヘッダーのメーターと連動。
