@@ -1190,6 +1190,7 @@ export default function TerminalPane({
                     onClick={() => {
                       setImageAction(item);
                       setPreviewFailed(false);
+                      setPreviewOpen(true); // v0.2.76: サムネクリックで即プレビュー
                     }}
                     className={`relative shrink-0 rounded overflow-hidden border transition ${
                       isActive
