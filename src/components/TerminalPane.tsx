@@ -468,6 +468,24 @@ export default function TerminalPane({
       fastScrollSensitivity: 8,
     });
 
+    // 2026-07-02 v0.2.67: Claude Code の Alternate Screen Buffer 切替
+    // (CSI ? 1049 h/l、および補助の 47/1047/1048) を xterm.js の parser で
+    // intercept して無視。Normal Buffer 継続で描画される → xterm scrollback
+    // が動く = ホイール/scrollbar でスクロールできる。
+    // 副作用: Claude Code の全画面 UI 描画が Normal Buffer に累積するため
+    // 過去 scroll した時に描画残骸が見える可能性あり。nakamura「文字の問題も
+    // これが原因かもしれない」との仮説の検証も兼ねる。
+    try {
+      const swallowAlt = (params: any) => {
+        const arr = typeof params?.toArray === "function" ? params.toArray() : (Array.isArray(params) ? params : []);
+        const p = Array.isArray(arr[0]) ? arr[0][0] : arr[0];
+        if (p === 1049 || p === 47 || p === 1047 || p === 1048) return true; // 無視して消化
+        return false;
+      };
+      terminal.parser.registerCsiHandler({ prefix: "?", final: "h" }, swallowAlt);
+      terminal.parser.registerCsiHandler({ prefix: "?", final: "l" }, swallowAlt);
+    } catch {}
+
     // Copy/paste shortcuts (Ctrl+Shift+C/V for Linux/Windows, Cmd+C/V for Mac)
     const isMac = navigator.platform.toLowerCase().includes("mac");
     terminal.attachCustomKeyEventHandler((e) => {
