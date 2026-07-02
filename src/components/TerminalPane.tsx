@@ -468,24 +468,6 @@ export default function TerminalPane({
       fastScrollSensitivity: 8,
     });
 
-    // 2026-07-02 v0.2.67: Claude Code の Alternate Screen Buffer 切替
-    // (CSI ? 1049 h/l、および補助の 47/1047/1048) を xterm.js の parser で
-    // intercept して無視。Normal Buffer 継続で描画される → xterm scrollback
-    // が動く = ホイール/scrollbar でスクロールできる。
-    // 副作用: Claude Code の全画面 UI 描画が Normal Buffer に累積するため
-    // 過去 scroll した時に描画残骸が見える可能性あり。nakamura「文字の問題も
-    // これが原因かもしれない」との仮説の検証も兼ねる。
-    try {
-      const swallowAlt = (params: any) => {
-        const arr = typeof params?.toArray === "function" ? params.toArray() : (Array.isArray(params) ? params : []);
-        const p = Array.isArray(arr[0]) ? arr[0][0] : arr[0];
-        if (p === 1049 || p === 47 || p === 1047 || p === 1048) return true; // 無視して消化
-        return false;
-      };
-      terminal.parser.registerCsiHandler({ prefix: "?", final: "h" }, swallowAlt);
-      terminal.parser.registerCsiHandler({ prefix: "?", final: "l" }, swallowAlt);
-    } catch {}
-
     // Copy/paste shortcuts (Ctrl+Shift+C/V for Linux/Windows, Cmd+C/V for Mac)
     const isMac = navigator.platform.toLowerCase().includes("mac");
     terminal.attachCustomKeyEventHandler((e) => {
@@ -806,34 +788,6 @@ export default function TerminalPane({
     const unsubscribe = wsOnMessage((msg: any) => {
       if (!alive) return;
       if (msg.type === "pty_output" && msg.id === sessionId) {
-        // 2026-07-02 v0.2.68/v0.2.69: Alt Screen Buffer 切替コマンドを文字列
-        // レベルで除去する (v0.2.67 の parser.registerCsiHandler は効かな
-        // かった)。除去対象:
-        //   \x1b[?1049h/l  = Alternate Screen Buffer 切替
-        //   \x1b[?47h/l    = 旧 Alt Buffer
-        //   \x1b[?1047h/l  = Alt Buffer 切替 (cursor 保持なし)
-        //   \x1b[?1048h/l  = cursor 保存/復元
-        // 削除することで xterm.js は Normal Buffer のまま描画継続 →
-        // scrollback がずっと有効になる。
-        msg.data = msg.data.replace(/\x1b\[\?(1049|1047|1048|47)[hl]/g, "");
-        // v0.2.69: 副作用対策 - \x1b[3J (scrollback クリア) を除去して
-        // 過去の履歴が Claude の再描画で消えないように保護する。
-        //   \x1b[3J = xterm 拡張の "erase saved lines" = scrollback 全消去
-        // Alt Buffer が無効なので Claude はここで履歴を消す必要が無く、
-        // 消されると nakamura が遡って読めなくなる。
-        msg.data = msg.data.replace(/\x1b\[3J/g, "");
-        // v0.2.70: Claude Code の TUI 再描画による scroll 位置リセット対策
-        //   \x1b[2J (全画面クリア) → \x1b[J (カーソル位置以降クリア) に変換
-        //     過去の scrollback 上に描画されたコンテンツを保護
-        //   \x1b[H (カーソルを 1,1 に絶対移動) → \n (改行) に変換
-        //     Alt Buffer 前提の「画面左上に飛んで上書き」を「新しい行から
-        //     描画継続」に置き換える。副作用として Claude の入力枠が
-        //     何度も描画されるが、scroll 位置は保たれる。
-        //   \x1b[<n>;<m>H (任意位置に絶対移動) は残す。行内の位置調整に
-        //     使われるので変換すると Claude UI が完全に壊れる。
-        msg.data = msg.data
-          .replace(/\x1b\[2J/g, "\x1b[J")
-          .replace(/\x1b\[H(?![^\x1b]*[?;])/g, "\n");
         showImageActionForPath(latestImagePathFromText(msg.data));
         // Background task 検知 (v0.2.49 で導入):
         // 起動と完了を pty output から捕まえて pane ヘッダーのメーターと連動。
