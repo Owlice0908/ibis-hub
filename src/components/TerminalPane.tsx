@@ -1051,42 +1051,8 @@ export default function TerminalPane({
     >
       <div className="flex items-center justify-between px-2 py-1 bg-surface border-b border-border gap-2">
         <span className="text-sm text-text-muted font-medium truncate shrink">{sessionName}</span>
-        {activeTask && (() => {
-          // 過去平均を基準に進行率を算出。平均が無ければ pulse アニメで動きを出す。
-          const avg = loadTaskAvgMs();
-          const pct = avg.avgMs > 0 ? Math.min(100, (taskElapsedMs / avg.avgMs) * 100) : 20;
-          const barColor =
-            avg.avgMs > 0 && taskElapsedMs > avg.avgMs * 1.2 ? "bg-danger" :
-            avg.avgMs > 0 && taskElapsedMs > avg.avgMs ? "bg-warning" :
-            "bg-accent";
-          const remaining = avg.avgMs > 0 ? Math.max(0, avg.avgMs - taskElapsedMs) : 0;
-          return (
-            <div
-              className="flex items-center gap-1.5 shrink min-w-0"
-              title={
-                avg.avgMs > 0
-                  ? `Background task ${activeTask.id}\n経過 ${formatMs(taskElapsedMs)} / 過去平均 ${formatMs(avg.avgMs)}\n残り推定 ${formatMs(remaining)}`
-                  : `Background task ${activeTask.id}\n経過 ${formatMs(taskElapsedMs)} (過去平均なし)`
-              }
-            >
-              <span className="text-[11px] font-mono text-text-muted tabular-nums whitespace-nowrap">
-                {formatMs(taskElapsedMs)}
-                {avg.avgMs > 0 && (
-                  <span className="text-text-muted/60">
-                    {" / "}
-                    {formatMs(avg.avgMs)}
-                  </span>
-                )}
-              </span>
-              <div className="w-20 h-1.5 bg-surface-hover rounded-full overflow-hidden shrink-0">
-                <div
-                  className={`h-full ${barColor} transition-all duration-300 ${avg.avgMs === 0 ? "animate-pulse" : ""}`}
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-            </div>
-          );
-        })()}
+        {/* v0.2.49 で入れた Bash background task メーターは v0.2.75 で撤去。
+            nakamura 意図 (対話ターン進捗) と全く合わず、ユーザーには意味なし。 */}
         <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={() => wsSend({ type: "pick_files", sessionId })}
