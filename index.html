@@ -7,6 +7,12 @@
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#0f0f0f" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- PWA インストール時のキャッシュ問題対策 (2026-07-02):
+         PWA が index.html をキャッシュして Ctrl+Shift+R でも更新されない
+         現象を防ぐため、meta タグでキャッシュを無効化。 -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>Ibis Hub</title>
   </head>
 
