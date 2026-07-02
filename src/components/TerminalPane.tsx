@@ -238,6 +238,8 @@ export default function TerminalPane({
   // 上部の画像アクションバー (プレビュー/ダウンロード/パス/✕) の最小化状態。
   // true = 上部バーを畳んで右上に小バッジ表示 (imageAction 自体は保持)
   const [actionBarMinimized, setActionBarMinimized] = useState(false);
+  // 「一覧」ボタンの開閉。true = 画像アクションバー下にサムネ列表示。
+  const [historyListOpen, setHistoryListOpen] = useState(false);
   // 「Command running in background with ID: xxx」で始まって
   // <task-notification>...<status>completed</status>...</task-notification> で
   // 終わる background task を捕まえて、pane ヘッダーに経過時間 + 進捗メーターを出す。
@@ -1177,6 +1179,15 @@ export default function TerminalPane({
                 プレビュー
               </button>
               <button
+                onClick={() => setHistoryListOpen((v) => !v)}
+                className={`text-xs px-2 py-1 rounded hover:bg-surface-hover ${
+                  historyListOpen ? "text-accent" : "text-text-muted hover:text-text"
+                }`}
+                title={`このセッションで生成した画像の一覧 (${imageHistory.length} 枚)`}
+              >
+                一覧{imageHistory.length > 0 ? ` (${imageHistory.length})` : ""}
+              </button>
+              <button
                 onClick={() => downloadSharedFile(imageAction.url, imageAction.fileName)}
                 className="text-xs text-bg bg-accent hover:bg-accent-hover px-2 py-1 rounded font-medium"
                 title="保存先を選んでダウンロード"
@@ -1206,7 +1217,7 @@ export default function TerminalPane({
               </button>
             </div>
           </div>
-          {imageHistory.length > 1 && (
+          {historyListOpen && imageHistory.length > 0 && (
             <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
               <span className="text-[10px] text-text-muted shrink-0 pr-0.5">履歴</span>
               {imageHistory.map((item) => {
