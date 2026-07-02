@@ -1385,11 +1385,10 @@ export default function TerminalPane({
           色は明示指定 (Tailwind の bg-surface-hover 等がテーマ次第で
           xterm 背景と溶けて見えなくなるのを防ぐ)。 */}
       <div
-        className="absolute top-9 right-0 bottom-0 z-30 cursor-pointer select-none"
+        className="absolute top-9 right-0 bottom-0 z-10 cursor-pointer select-none"
         style={{
-          width: 14,
-          background: theme === "dark" ? "#1f2530" : "#e5e8ee",
-          borderLeft: theme === "dark" ? "1px solid #2f3846" : "1px solid #d0d5dd",
+          width: 8,
+          background: "transparent",
         }}
         onClick={(e) => {
           const terminal = terminalRef.current;
@@ -1429,8 +1428,8 @@ export default function TerminalPane({
         <div
           className="absolute rounded pointer-events-none"
           style={{
-            left: 3, right: 3, top: "40%", height: "20%",
-            background: theme === "dark" ? "#6b7280" : "#a8adb5",
+            left: 1, right: 1, top: "45%", height: "10%",
+            background: theme === "dark" ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.2)",
           }}
         />
       </div>
