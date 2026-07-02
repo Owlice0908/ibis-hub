@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import type { Session, LayoutMode, ThemeMode } from "../types";
-import logoUrl from "../assets/logo-refined-balanced.png";
+import appIconUrl from "../assets/app-icon-bird.png";
 import NotificationBadge from "./NotificationBadge";
 
 interface SidebarProps {
@@ -75,11 +75,17 @@ export default function Sidebar({
       {/* Header */}
       <div className="p-4 border-b border-border flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-text tracking-tight flex items-center gap-1.5">
-            <img src={logoUrl} alt="" className="w-5 h-5" />
+          <h1 className="text-lg leading-6 font-bold text-text tracking-tight flex items-center gap-1.5">
+            <span className="w-6 h-6 shrink-0 inline-flex items-center justify-center">
+              <img
+                src={appIconUrl}
+                alt=""
+                className="w-6 h-6 translate-y-[1px] brightness-110 saturate-125 drop-shadow-[0_0_5px_rgba(245,183,64,0.38)]"
+              />
+            </span>
             Ibis Hub
           </h1>
-          <p className="text-xs text-text-muted mt-0.5">Session Manager</p>
+          <p className="text-xs text-text-muted mt-0.5">Session Manager · v0.2.54</p>
         </div>
         <button
           onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")}

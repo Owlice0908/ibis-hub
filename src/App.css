@@ -100,11 +100,20 @@ html, body, #root {
    - 2026-07-01: width 6px は細くて overlay で見えないと nakamura 指摘
    - track に色を明示することで WebKit overlay-scrollbar を traditional に強制
    - width 12px はブラウザデフォルト (15-17px) より少しスリムなバランス
-   - .xterm の padding-right: 14px と衝突しないよう配慮 */
+   - .xterm の padding-right: 14px と衝突しないよう配慮
+   - 2026-07-02: Claude Code の Alternate Screen Buffer では scrollback が無い
+     ため通常は scrollbar 非表示になる。visibility/display を強制指定して
+     Claude/codex 両セッションで track が必ず見えるようにする。 */
+.xterm .xterm-viewport,
 .xterm-viewport {
   overflow-y: scroll !important;
   scrollbar-width: auto;
   scrollbar-color: #4a5563 #1a1e26;
+}
+.xterm .xterm-viewport::-webkit-scrollbar,
+.xterm-viewport::-webkit-scrollbar {
+  display: block !important;
+  visibility: visible !important;
 }
 .xterm-viewport::-webkit-scrollbar {
   width: 12px;
