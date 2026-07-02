@@ -116,6 +116,27 @@ function App() {
     localStorage.setItem("ibis-layout", layout);
   }, [layout]);
 
+  // Ctrl+Tab / Ctrl+Shift+Tab で次/前セッションに切替 (nakamura 要望 2026-07-01)。
+  // TerminalPane がカスタムイベントで発火する。ブラウザ相当の tab 循環動作を提供。
+  useEffect(() => {
+    const cycle = (dir: 1 | -1) => {
+      const ids = sessionsRef.current.map((s) => s.id);
+      if (ids.length === 0) return;
+      const cur = focusedSessionIdRef.current;
+      const idx = cur ? ids.indexOf(cur) : -1;
+      const next = ids[((idx + dir) % ids.length + ids.length) % ids.length];
+      if (next) setFocusedSessionId(next);
+    };
+    const onNext = () => cycle(1);
+    const onPrev = () => cycle(-1);
+    window.addEventListener("ibis-next-session", onNext);
+    window.addEventListener("ibis-prev-session", onPrev);
+    return () => {
+      window.removeEventListener("ibis-next-session", onNext);
+      window.removeEventListener("ibis-prev-session", onPrev);
+    };
+  }, []);
+
   // Tauri-only: auto-update check + native drag-and-drop
   useEffect(() => {
     if (!isTauri) return;
@@ -460,7 +481,11 @@ function App() {
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
               <div className="flex items-center justify-center gap-4 mb-3">
-                <img src={logoUrl} alt="Ibis Hub" className="h-10 w-auto" />
+                <img
+                  src={logoUrl}
+                  alt="Ibis Hub"
+                  className="h-9 w-auto brightness-110 saturate-125 drop-shadow-[0_0_10px_rgba(245,183,64,0.26)]"
+                />
                 <h2 className="text-5xl font-semibold text-text leading-none">
                   Ibis Hub
                 </h2>

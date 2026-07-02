@@ -494,6 +494,31 @@ export default function TerminalPane({
         wsSend({ type: "write", id: sessionId, data: "\x1b" });
         return false;
       }
+      // Ctrl+Tab / Ctrl+Shift+Tab: ブラウザ的な「次/前タブ」で Sidebar のセッション
+      // を切替。通常ブラウザの Ctrl+Tab 相当。フォーカスされたまま切替できる。
+      // Ibis Hub 独自のカスタムイベントで App.tsx に伝達。
+      if (
+        e.type === "keydown" &&
+        e.key === "Tab" &&
+        e.ctrlKey &&
+        !e.altKey && !e.metaKey && !e.isComposing
+      ) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent(e.shiftKey ? "ibis-prev-session" : "ibis-next-session"));
+        return false;
+      }
+      // Ctrl+Shift+A: ターミナル内容を全選択 (Bash の Ctrl+A は行頭移動なので競合)。
+      // ブラウザの Ctrl+A 相当を Shift 修飾で提供。
+      if (
+        e.type === "keydown" &&
+        e.key === "A" &&
+        e.ctrlKey && e.shiftKey &&
+        !e.altKey && !e.metaKey && !e.isComposing
+      ) {
+        e.preventDefault();
+        try { terminal.selectAll(); } catch {}
+        return false;
+      }
       // Shift+Enter → insert a newline instead of submitting. Sends ESC+CR,
       // the same sequence Claude Code's `/terminal-setup` installs; Claude and
       // codex both read it as "newline, don't send". Lets you write multi-line
