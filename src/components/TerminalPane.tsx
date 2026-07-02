@@ -1186,7 +1186,7 @@ export default function TerminalPane({
                 className="text-xs text-text-muted hover:text-text px-2 py-1 rounded hover:bg-surface-hover"
                 title="最小化 (右上バッジに畳む)"
               >
-                _
+                ＿
               </button>
               <button
                 onClick={() => { setImageAction(null); setImageHistory([]); }}
@@ -1276,7 +1276,7 @@ export default function TerminalPane({
                 className="text-xs text-text-muted hover:text-text px-2 py-1 rounded hover:bg-surface-hover"
                 title="最小化 (右下バッジに畳む)"
               >
-                _
+                ＿
               </button>
               <button
                 onClick={(e) => {
