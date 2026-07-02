@@ -360,7 +360,14 @@ const httpServer = createServer((req, res) => {
   try {
     const data = readFileSync(filePath);
     const header = contentType.startsWith("text/") ? `${contentType}; charset=utf-8` : contentType;
-    res.writeHead(200, { "Content-Type": header });
+    // 2026-07-02: PWA インストール環境で Ctrl+Shift+R でも index.html が古い
+    // キャッシュから返される問題があった。index.html だけは必ず fresh を
+    // 返させる (hash 付き JS/CSS は変わらないので長期キャッシュで OK)。
+    const isHtml = ext === ".html" || filePath.endsWith("index.html");
+    const cacheHeaders = isHtml
+      ? { "Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache", "Expires": "0" }
+      : {};
+    res.writeHead(200, { "Content-Type": header, ...cacheHeaders });
     res.end(data);
   } catch {
     res.writeHead(500);
