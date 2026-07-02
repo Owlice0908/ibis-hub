@@ -1156,7 +1156,7 @@ export default function TerminalPane({
               <div className="text-xs font-medium text-text truncate">{imageAction.fileName}</div>
               <div className="text-[11px] text-text-muted truncate">生成画像</div>
             </div>
-            <div className="flex items-center gap-1 shrink-0">
+            <div className="flex items-center gap-2 shrink-0">
               <button
                 onClick={() => {
                   setPreviewFailed(false);
@@ -1247,7 +1247,7 @@ export default function TerminalPane({
               <div className="text-sm font-medium text-text truncate">{imageAction.fileName}</div>
               <div className="text-[11px] text-text-muted truncate">{imageAction.path}</div>
             </div>
-            <div className="flex items-center gap-1 shrink-0">
+            <div className="flex items-center gap-2 shrink-0">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
