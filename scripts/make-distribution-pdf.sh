@@ -31,25 +31,25 @@ if [ ! -x "$CHROME" ]; then
   CHROME="/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe"
 fi
 
-WSL_OUT="/tmp/Ibis-Hub-利用ガイド-v0.2.76.pdf"
+WSL_OUT="/tmp/Ibis-Hub-利用ガイド-v0.2.77.pdf"
 rm -f "$WSL_OUT"
 
 # Chrome には Windows パスで渡す (WSL パスだと file:// スキームが解釈できない)
 HTML_WIN=$(wslpath -w /tmp/distribution.html)
 PDF_WIN=$(wslpath -w /tmp)
 "$CHROME" --headless=new --disable-gpu \
-  --print-to-pdf="${PDF_WIN}\\Ibis-Hub-利用ガイド-v0.2.76.pdf" \
+  --print-to-pdf="${PDF_WIN}\\Ibis-Hub-利用ガイド-v0.2.77.pdf" \
   --print-to-pdf-no-header \
   "file:///${HTML_WIN//\\/\/}" 2>&1 | \
   grep -vE "DevTools|GLES|Volume|Skipping|SwiftShader|GPU" || true
 
 # 出来た PDF を Windows Downloads にもコピー
-WIN_OUT="/mnt/c/Users/stept/Downloads/Ibis-Hub-利用ガイド-v0.2.76.pdf"
+WIN_OUT="/mnt/c/Users/stept/Downloads/Ibis-Hub-利用ガイド-v0.2.77.pdf"
 if [ -f "$WSL_OUT" ]; then
   cp "$WSL_OUT" "$WIN_OUT"
   echo ""
   echo "✅ PDF 生成完了:"
-  echo "   Windows パス: C:\\Users\\stept\\Downloads\\Ibis-Hub-利用ガイド-v0.2.76.pdf"
+  echo "   Windows パス: C:\\Users\\stept\\Downloads\\Ibis-Hub-利用ガイド-v0.2.77.pdf"
   ls -la "$WIN_OUT"
 else
   echo "❌ PDF 生成失敗" >&2

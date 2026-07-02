@@ -466,8 +466,8 @@ export default function TerminalPane({
       // Default is 1 line per wheel notch, which feels sluggish on Mac
       // trackpads. Move several lines per tick so scrolling feels responsive
       // (hold Alt for the faster step).
-      scrollSensitivity: 3,
-      fastScrollSensitivity: 8,
+      scrollSensitivity: 8,      // v0.2.77: 3 → 8 で軽快感アップ
+      fastScrollSensitivity: 15, // Alt 押しながらのファストスクロール
     });
 
     // Copy/paste shortcuts (Ctrl+Shift+C/V for Linux/Windows, Cmd+C/V for Mac)

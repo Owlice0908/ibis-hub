@@ -96,59 +96,16 @@ html, body, #root {
   cursor: text;
   overflow: hidden !important;
 }
-/* xterm のスクロールバー: ブラウザネイティブ相当の常時可視スタイル。
-   - 2026-07-01: width 6px は細くて overlay で見えないと nakamura 指摘
-   - track に色を明示することで WebKit overlay-scrollbar を traditional に強制
-   - width 12px はブラウザデフォルト (15-17px) より少しスリムなバランス
-   - .xterm の padding-right: 14px と衝突しないよう配慮
-   - 2026-07-02: Claude Code の Alternate Screen Buffer では scrollback が無い
-     ため通常は scrollbar 非表示になる。visibility/display を強制指定して
-     Claude/codex 両セッションで track が必ず見えるようにする。 */
+/* 2026-07-02 v0.2.77: xterm scrollbar を全て非表示化。
+   nakamura『不要なスクロールバー残ってるセッションがある』対応。
+   codex セッションで見えていた scrollbar は Claude と一貫性が
+   無いので撤去。スクロールはマウスホイール / Shift+ホイールで。 */
 .xterm .xterm-viewport,
 .xterm-viewport {
-  overflow-y: scroll !important;
-  scrollbar-width: auto;
-  scrollbar-color: #4a5563 #1a1e26;
+  scrollbar-width: none !important;
 }
 .xterm .xterm-viewport::-webkit-scrollbar,
 .xterm-viewport::-webkit-scrollbar {
-  display: block !important;
-  visibility: visible !important;
-  /* 2026-07-02 追加: WebKit の overlay scrollbar モードを無効化して
-     traditional な永続表示に切り替える。Claude Code の Alt Screen Buffer
-     でも scrollbar track が常時見えるようにするための最終ハック。 */
-  -webkit-appearance: none !important;
-}
-/* 2026-07-02 v0.2.58 の疑似要素 scrollbar は v0.2.59 で撤去。
-   見た目だけで実際にスクロールできず「動かないなら意味ない」と指摘。
-   Alt Screen Buffer 中のスクロールは Shift+マウスホイール経由で
-   Claude/codex 側の履歴に委ねる (v0.2.48 で TerminalPane に実装済み)。 */
-.xterm-viewport::-webkit-scrollbar {
-  width: 12px;
-  background: #1a1e26;
-}
-.xterm-viewport::-webkit-scrollbar-track {
-  background: #1a1e26;
-}
-.xterm-viewport::-webkit-scrollbar-thumb {
-  background: #4a5563;
-  border-radius: 6px;
-  border: 2px solid #1a1e26;
-}
-.xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: #6b7280;
-}
-[data-theme="light"] .xterm-viewport {
-  scrollbar-color: #c8ccd4 #eef0f3;
-}
-[data-theme="light"] .xterm-viewport::-webkit-scrollbar,
-[data-theme="light"] .xterm-viewport::-webkit-scrollbar-track {
-  background: #eef0f3;
-}
-[data-theme="light"] .xterm-viewport::-webkit-scrollbar-thumb {
-  background: #c8ccd4;
-  border: 2px solid #eef0f3;
-}
-[data-theme="light"] .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: #a8adb5;
+  display: none !important;
+  width: 0 !important;
 }

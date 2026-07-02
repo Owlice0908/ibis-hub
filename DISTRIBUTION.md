@@ -1,6 +1,6 @@
 # Ibis Hub 利用ガイド
 
-**v0.2.76**（2026-07-02）— Windows 版
+**v0.2.77**（2026-07-02）— Windows 版
 
 複数の Claude Code / ChatGPT (codex) セッションを 1 つのウィンドウで並列に運用できるデスクトップアプリです。
 
@@ -8,7 +8,7 @@
 
 ## インストール
 
-1. `Ibis.Hub_0.2.76_x64-setup.exe` をダブルクリック
+1. `Ibis.Hub_0.2.77_x64-setup.exe` をダブルクリック
 2. SmartScreen 警告が出たら「詳細情報」→「実行」
 3. スタートメニューから **Ibis Hub** を起動
 
