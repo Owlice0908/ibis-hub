@@ -96,16 +96,7 @@ html, body, #root {
   cursor: text;
   overflow: hidden !important;
 }
-/* 2026-07-02 v0.2.77: xterm scrollbar を全て非表示化。
-   nakamura『不要なスクロールバー残ってるセッションがある』対応。
-   codex セッションで見えていた scrollbar は Claude と一貫性が
-   無いので撤去。スクロールはマウスホイール / Shift+ホイールで。 */
-.xterm .xterm-viewport,
-.xterm-viewport {
-  scrollbar-width: none !important;
-}
-.xterm .xterm-viewport::-webkit-scrollbar,
-.xterm-viewport::-webkit-scrollbar {
-  display: none !important;
-  width: 0 !important;
-}
+/* 2026-07-02 v0.2.77: xterm scrollbar 系の CSS 全撤去、xterm.js の
+   デフォルト挙動に戻す。nakamura『codex には触るな』対応。
+   codex (Normal Buffer) では通常のブラウザ scrollbar が自動で出る、
+   Claude (Alt Buffer) では元々出ない、が本来の期待挙動。 */
