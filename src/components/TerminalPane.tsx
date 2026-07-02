@@ -864,9 +864,18 @@ export default function TerminalPane({
       e.preventDefault();
       e.stopPropagation();
       try {
-        // deltaY 正 = 下方向。1 notch ≒ 100px → 約 3 行が標準的な体感量
-        const lines = Math.sign(e.deltaY) * Math.max(1, Math.round(Math.abs(e.deltaY) / 30));
-        terminal.scrollLines(lines);
+        // Alt Screen Buffer (Claude Code TUI 等) 使用中は xterm レベルの
+        // scrollLines() が効かないので PTY に PageUp/PageDown を送信する
+        // 経路に振り替える。Claude/codex 側で自分の履歴を上下する。
+        const isAlt = terminal.buffer.active.type === "alternate";
+        if (isAlt) {
+          const seq = e.deltaY < 0 ? "\x1b[5~" : "\x1b[6~";
+          wsSend({ type: "write", id: sessionId, data: seq });
+        } else {
+          // Normal Buffer: xterm 側の scrollback を直接動かす
+          const lines = Math.sign(e.deltaY) * Math.max(1, Math.round(Math.abs(e.deltaY) / 30));
+          terminal.scrollLines(lines);
+        }
       } catch {}
     };
     const termContainerForWheel = termRef.current;
@@ -1368,6 +1377,54 @@ export default function TerminalPane({
         </button>
       )}
       <div ref={termRef} className="flex-1 min-h-0 min-w-0 overflow-hidden" />
+      {/* カスタムスクロールバー (Alt Screen Buffer 対応):
+          xterm.js の buffer が normal / alternate どちらでも動く scroll UI。
+          - Normal Buffer: terminal.scrollLines() で xterm 内 scrollback を動かす
+          - Alt Buffer (Claude Code TUI): PTY に PageUp/PageDown を送信して
+            Claude/codex 側の履歴を上下 */}
+      <div
+        className="absolute top-9 right-0 bottom-0 w-3 z-10 flex flex-col items-stretch cursor-pointer select-none"
+        onClick={(e) => {
+          const terminal = terminalRef.current;
+          if (!terminal) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const relY = (e.clientY - rect.top) / rect.height;
+          const isAlt = terminal.buffer.active.type === "alternate";
+          if (isAlt) {
+            // 上端付近 = Home、下端付近 = End、それ以外 = PageUp/PageDown
+            let seq: string;
+            if (relY < 0.05) seq = "\x1b[1~";        // Home
+            else if (relY > 0.95) seq = "\x1b[4~";   // End
+            else if (relY < 0.5) seq = "\x1b[5~";    // PageUp
+            else seq = "\x1b[6~";                     // PageDown
+            wsSend({ type: "write", id: sessionId, data: seq });
+          } else {
+            const lines = relY < 0.5 ? -Math.max(5, terminal.rows - 2) : Math.max(5, terminal.rows - 2);
+            terminal.scrollLines(lines);
+          }
+        }}
+        onWheel={(e) => {
+          const terminal = terminalRef.current;
+          if (!terminal) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const isAlt = terminal.buffer.active.type === "alternate";
+          if (isAlt) {
+            const seq = e.deltaY < 0 ? "\x1b[5~" : "\x1b[6~";
+            wsSend({ type: "write", id: sessionId, data: seq });
+          } else {
+            const lines = Math.sign(e.deltaY) * Math.max(1, Math.round(Math.abs(e.deltaY) / 30));
+            terminal.scrollLines(lines);
+          }
+        }}
+        title="スクロール (上半分クリック=PageUp / 下半分=PageDown / ホイールも可)"
+      >
+        <div className="w-full h-full bg-surface-hover" />
+        <div
+          className="absolute left-0.5 right-0.5 bg-border rounded-sm pointer-events-none"
+          style={{ top: "40%", height: "20%" }}
+        />
+      </div>
       {dragOver && (
         <div className="absolute inset-0 bg-accent/10 flex items-center justify-center pointer-events-none z-10">
           <div className="bg-surface border border-accent rounded-lg px-6 py-3 text-text font-medium shadow-lg pointer-events-none">
