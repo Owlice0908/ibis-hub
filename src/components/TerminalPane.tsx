@@ -235,6 +235,9 @@ export default function TerminalPane({
   const [imageHistory, setImageHistory] = useState<ImageAction[]>([]);
   // プレビューの最小化状態。true = 右下にピル型バッジで畳む、false = 通常表示。
   const [previewMinimized, setPreviewMinimized] = useState(false);
+  // 上部の画像アクションバー (プレビュー/ダウンロード/パス/✕) の最小化状態。
+  // true = 上部バーを畳んで右上に小バッジ表示 (imageAction 自体は保持)
+  const [actionBarMinimized, setActionBarMinimized] = useState(false);
   // 「Command running in background with ID: xxx」で始まって
   // <task-notification>...<status>completed</status>...</task-notification> で
   // 終わる background task を捕まえて、pane ヘッダーに経過時間 + 進捗メーターを出す。
@@ -1146,46 +1149,93 @@ export default function TerminalPane({
           >✕</button>
         </div>
       )}
-      {imageAction && (
-        <div className="absolute top-9 left-2 right-2 z-20 flex items-center justify-between gap-2 bg-surface border border-border rounded-md shadow-lg px-2 py-1.5">
-          <div className="min-w-0">
-            <div className="text-xs font-medium text-text truncate">{imageAction.fileName}</div>
-            <div className="text-[11px] text-text-muted truncate">生成画像</div>
+      {imageAction && !actionBarMinimized && (
+        <div className="absolute top-9 left-2 right-2 z-20 flex flex-col gap-1.5 bg-surface border border-border rounded-md shadow-lg px-2 py-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-text truncate">{imageAction.fileName}</div>
+              <div className="text-[11px] text-text-muted truncate">生成画像</div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => {
+                  setPreviewFailed(false);
+                  setPreviewOpen(true);
+                }}
+                className="text-xs text-text hover:text-accent px-2 py-1 rounded hover:bg-surface-hover"
+                title="画像をプレビュー"
+              >
+                プレビュー
+              </button>
+              <button
+                onClick={() => downloadSharedFile(imageAction.url, imageAction.fileName)}
+                className="text-xs text-bg bg-accent hover:bg-accent-hover px-2 py-1 rounded font-medium"
+                title="保存先を選んでダウンロード"
+              >
+                ダウンロード
+              </button>
+              <button
+                onClick={() => copyToClipboard(imageAction.path)}
+                className="text-xs text-text-muted hover:text-text px-2 py-1 rounded hover:bg-surface-hover"
+                title="ファイルパスをコピー"
+              >
+                パス
+              </button>
+              <button
+                onClick={() => setActionBarMinimized(true)}
+                className="text-xs text-text-muted hover:text-text px-2 py-1 rounded hover:bg-surface-hover"
+                title="最小化 (右上バッジに畳む)"
+              >
+                _
+              </button>
+              <button
+                onClick={() => { setImageAction(null); setImageHistory([]); }}
+                className="text-xs text-text-muted hover:text-danger px-1.5 py-1 rounded hover:bg-surface-hover"
+                title="閉じる (履歴も破棄)"
+              >
+                ✕
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              onClick={() => {
-                setPreviewFailed(false);
-                setPreviewOpen(true);
-              }}
-              className="text-xs text-text hover:text-accent px-2 py-1 rounded hover:bg-surface-hover"
-              title="画像をプレビュー"
-            >
-              プレビュー
-            </button>
-            <button
-              onClick={() => downloadSharedFile(imageAction.url, imageAction.fileName)}
-              className="text-xs text-bg bg-accent hover:bg-accent-hover px-2 py-1 rounded font-medium"
-              title="保存先を選んでダウンロード"
-            >
-              ダウンロード
-            </button>
-            <button
-              onClick={() => copyToClipboard(imageAction.path)}
-              className="text-xs text-text-muted hover:text-text px-2 py-1 rounded hover:bg-surface-hover"
-              title="ファイルパスをコピー"
-            >
-              パス
-            </button>
-            <button
-              onClick={() => setImageAction(null)}
-              className="text-xs text-text-muted hover:text-danger px-1.5 py-1 rounded hover:bg-surface-hover"
-              title="閉じる"
-            >
-              ✕
-            </button>
-          </div>
+          {imageHistory.length > 1 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              <span className="text-[10px] text-text-muted shrink-0 pr-0.5">履歴</span>
+              {imageHistory.map((item) => {
+                const isActive = item.path === imageAction.path;
+                return (
+                  <button
+                    key={item.path}
+                    onClick={() => {
+                      setImageAction(item);
+                      setPreviewFailed(false);
+                    }}
+                    className={`relative shrink-0 rounded overflow-hidden border transition ${
+                      isActive
+                        ? "border-accent ring-1 ring-accent"
+                        : "border-border hover:border-accent/60"
+                    }`}
+                    title={item.fileName}
+                    style={{ width: 40, height: 40 }}
+                  >
+                    <img src={item.url} alt={item.fileName} className="w-full h-full object-cover" />
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
+      )}
+      {imageAction && actionBarMinimized && (
+        <button
+          onClick={() => setActionBarMinimized(false)}
+          className="absolute top-9 right-2 z-20 flex items-center gap-1.5 bg-surface border border-border hover:border-accent rounded-full pl-1 pr-2.5 py-1 shadow-lg text-xs text-text"
+          title="画像アクションを開く"
+        >
+          <img src={imageAction.url} alt="" className="w-5 h-5 rounded-full object-cover" />
+          <span className="truncate max-w-[100px]">
+            {imageHistory.length > 1 ? `${imageHistory.length} 枚` : imageAction.fileName}
+          </span>
+        </button>
       )}
       {imageAction && previewOpen && !previewMinimized && (
         <div

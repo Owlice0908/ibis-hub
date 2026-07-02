@@ -114,6 +114,10 @@ html, body, #root {
 .xterm-viewport::-webkit-scrollbar {
   display: block !important;
   visibility: visible !important;
+  /* 2026-07-02 追加: WebKit の overlay scrollbar モードを無効化して
+     traditional な永続表示に切り替える。Claude Code の Alt Screen Buffer
+     でも scrollbar track が常時見えるようにするための最終ハック。 */
+  -webkit-appearance: none !important;
 }
 .xterm-viewport::-webkit-scrollbar {
   width: 12px;
