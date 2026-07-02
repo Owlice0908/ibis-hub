@@ -806,7 +806,7 @@ export default function TerminalPane({
     const unsubscribe = wsOnMessage((msg: any) => {
       if (!alive) return;
       if (msg.type === "pty_output" && msg.id === sessionId) {
-        // 2026-07-02 v0.2.68: Alt Screen Buffer 切替コマンドを文字列
+        // 2026-07-02 v0.2.68/v0.2.69: Alt Screen Buffer 切替コマンドを文字列
         // レベルで除去する (v0.2.67 の parser.registerCsiHandler は効かな
         // かった)。除去対象:
         //   \x1b[?1049h/l  = Alternate Screen Buffer 切替
@@ -816,6 +816,12 @@ export default function TerminalPane({
         // 削除することで xterm.js は Normal Buffer のまま描画継続 →
         // scrollback がずっと有効になる。
         msg.data = msg.data.replace(/\x1b\[\?(1049|1047|1048|47)[hl]/g, "");
+        // v0.2.69: 副作用対策 - \x1b[3J (scrollback クリア) を除去して
+        // 過去の履歴が Claude の再描画で消えないように保護する。
+        //   \x1b[3J = xterm 拡張の "erase saved lines" = scrollback 全消去
+        // Alt Buffer が無効なので Claude はここで履歴を消す必要が無く、
+        // 消されると nakamura が遡って読めなくなる。
+        msg.data = msg.data.replace(/\x1b\[3J/g, "");
         showImageActionForPath(latestImagePathFromText(msg.data));
         // Background task 検知 (v0.2.49 で導入):
         // 起動と完了を pty output から捕まえて pane ヘッダーのメーターと連動。
