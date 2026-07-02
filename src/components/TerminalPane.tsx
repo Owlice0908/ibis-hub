@@ -1385,8 +1385,12 @@ export default function TerminalPane({
           色は明示指定 (Tailwind の bg-surface-hover 等がテーマ次第で
           xterm 背景と溶けて見えなくなるのを防ぐ)。 */}
       <div
-        className="absolute top-9 right-0 bottom-0 z-10 cursor-pointer select-none"
-        style={{ width: 12, background: theme === "dark" ? "#1a1e26" : "#eef0f3" }}
+        className="absolute top-9 right-0 bottom-0 z-30 cursor-pointer select-none"
+        style={{
+          width: 14,
+          background: theme === "dark" ? "#1f2530" : "#e5e8ee",
+          borderLeft: theme === "dark" ? "1px solid #2f3846" : "1px solid #d0d5dd",
+        }}
         onClick={(e) => {
           const terminal = terminalRef.current;
           if (!terminal) return;
@@ -1423,10 +1427,10 @@ export default function TerminalPane({
         title="スクロール (上半分クリック=PageUp / 下半分=PageDown / ホイールも可)"
       >
         <div
-          className="absolute rounded-sm pointer-events-none"
+          className="absolute rounded pointer-events-none"
           style={{
-            left: 2, right: 2, top: "40%", height: "20%",
-            background: theme === "dark" ? "#4a5563" : "#c8ccd4",
+            left: 3, right: 3, top: "40%", height: "20%",
+            background: theme === "dark" ? "#6b7280" : "#a8adb5",
           }}
         />
       </div>

@@ -85,7 +85,7 @@ export default function Sidebar({
             </span>
             Ibis Hub
           </h1>
-          <p className="text-xs text-text-muted mt-0.5">Session Manager · v0.2.61</p>
+          <p className="text-xs text-text-muted mt-0.5">Session Manager · v0.2.62</p>
         </div>
         <button
           onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")}
