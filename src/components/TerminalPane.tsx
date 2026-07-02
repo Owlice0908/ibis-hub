@@ -1381,9 +1381,12 @@ export default function TerminalPane({
           xterm.js の buffer が normal / alternate どちらでも動く scroll UI。
           - Normal Buffer: terminal.scrollLines() で xterm 内 scrollback を動かす
           - Alt Buffer (Claude Code TUI): PTY に PageUp/PageDown を送信して
-            Claude/codex 側の履歴を上下 */}
+            Claude/codex 側の履歴を上下
+          色は明示指定 (Tailwind の bg-surface-hover 等がテーマ次第で
+          xterm 背景と溶けて見えなくなるのを防ぐ)。 */}
       <div
-        className="absolute top-9 right-0 bottom-0 w-3 z-10 flex flex-col items-stretch cursor-pointer select-none"
+        className="absolute top-9 right-0 bottom-0 z-10 cursor-pointer select-none"
+        style={{ width: 12, background: theme === "dark" ? "#1a1e26" : "#eef0f3" }}
         onClick={(e) => {
           const terminal = terminalRef.current;
           if (!terminal) return;
@@ -1419,10 +1422,12 @@ export default function TerminalPane({
         }}
         title="スクロール (上半分クリック=PageUp / 下半分=PageDown / ホイールも可)"
       >
-        <div className="w-full h-full bg-surface-hover" />
         <div
-          className="absolute left-0.5 right-0.5 bg-border rounded-sm pointer-events-none"
-          style={{ top: "40%", height: "20%" }}
+          className="absolute rounded-sm pointer-events-none"
+          style={{
+            left: 2, right: 2, top: "40%", height: "20%",
+            background: theme === "dark" ? "#4a5563" : "#c8ccd4",
+          }}
         />
       </div>
       {dragOver && (
