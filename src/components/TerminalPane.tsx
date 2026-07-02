@@ -1185,14 +1185,9 @@ export default function TerminalPane({
               {imageHistory.map((item) => {
                 const isActive = item.path === imageAction.path;
                 return (
-                  <button
+                  <div
                     key={item.path}
-                    onClick={() => {
-                      setImageAction(item);
-                      setPreviewFailed(false);
-                      setPreviewOpen(true); // v0.2.76: サムネクリックで即プレビュー
-                    }}
-                    className={`relative shrink-0 rounded overflow-hidden border transition ${
+                    className={`group relative shrink-0 rounded overflow-hidden border transition ${
                       isActive
                         ? "border-accent ring-1 ring-accent"
                         : "border-border hover:border-accent/60"
@@ -1200,8 +1195,27 @@ export default function TerminalPane({
                     title={item.fileName}
                     style={{ width: 40, height: 40 }}
                   >
-                    <img src={item.url} alt={item.fileName} className="w-full h-full object-cover" />
-                  </button>
+                    <button
+                      onClick={() => {
+                        setImageAction(item);
+                        setPreviewFailed(false);
+                        setPreviewOpen(true);
+                      }}
+                      className="absolute inset-0 w-full h-full"
+                    >
+                      <img src={item.url} alt={item.fileName} className="w-full h-full object-cover" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        downloadSharedFile(item.url, item.fileName);
+                      }}
+                      className="absolute top-0.5 right-0.5 w-4 h-4 flex items-center justify-center bg-bg/85 hover:bg-accent hover:text-bg text-text rounded text-[10px] opacity-0 group-hover:opacity-100 transition"
+                      title="この画像をダウンロード"
+                    >
+                      ⬇
+                    </button>
+                  </div>
                 );
               })}
             </div>
