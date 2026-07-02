@@ -788,15 +788,6 @@ export default function TerminalPane({
     const unsubscribe = wsOnMessage((msg: any) => {
       if (!alive) return;
       if (msg.type === "pty_output" && msg.id === sessionId) {
-        // 2026-07-02 v0.2.72: Alt Screen Buffer 切替コマンド + scrollback
-        // クリア + 画面クリア/カーソルホーム系を除去 (nakamura『戻して』で
-        // 復活)。Claude Code の TUI 更新で scrollback が消えたり位置が
-        // リセットされるのを防ぎ、xterm scrollback が動く状態を維持する。
-        msg.data = msg.data
-          .replace(/\x1b\[\?(1049|1047|1048|47)[hl]/g, "") // Alt Buffer 切替
-          .replace(/\x1b\[3J/g, "")                          // scrollback クリア
-          .replace(/\x1b\[2J/g, "\x1b[J")                    // 全画面クリア → カーソル以降クリア
-          .replace(/\x1b\[H(?![^\x1b]*[?;])/g, "\n");        // ホーム移動 → 改行
         showImageActionForPath(latestImagePathFromText(msg.data));
         // Background task 検知 (v0.2.49 で導入):
         // 起動と完了を pty output から捕まえて pane ヘッダーのメーターと連動。
