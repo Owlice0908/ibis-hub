@@ -1054,13 +1054,9 @@ export default function TerminalPane({
         {/* v0.2.49 で入れた Bash background task メーターは v0.2.75 で撤去。
             nakamura 意図 (対話ターン進捗) と全く合わず、ユーザーには意味なし。 */}
         <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={() => wsSend({ type: "pick_files", sessionId })}
-            className="text-base text-accent hover:text-accent-hover px-3 py-1 rounded hover:bg-surface-hover font-medium"
-            title="ファイル・フォルダ選択"
-          >
-            + File
-          </button>
+          {/* v0.2.76: '+ File' ボタン撤去。nakamura『押しても何も開かない』
+              (Windows で pick_files が正常応答しない、または server 側
+              handler 未実装/壊れている)。ドラッグ&ドロップで代替可能。 */}
           {showControls && (
             <>
             <button
