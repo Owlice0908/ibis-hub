@@ -1385,10 +1385,13 @@ export default function TerminalPane({
           色は明示指定 (Tailwind の bg-surface-hover 等がテーマ次第で
           xterm 背景と溶けて見えなくなるのを防ぐ)。 */}
       <div
-        className="absolute top-9 right-0 bottom-0 z-10 cursor-pointer select-none"
+        className="absolute z-10 cursor-pointer select-none rounded"
         style={{
+          right: 3,
+          bottom: 20,
           width: 8,
-          background: "transparent",
+          height: 60,
+          background: theme === "dark" ? "rgba(255,255,255,0.28)" : "rgba(0,0,0,0.22)",
         }}
         onClick={(e) => {
           const terminal = terminalRef.current;
@@ -1425,13 +1428,6 @@ export default function TerminalPane({
         }}
         title="スクロール (上半分クリック=PageUp / 下半分=PageDown / ホイールも可)"
       >
-        <div
-          className="absolute rounded pointer-events-none"
-          style={{
-            left: 1, right: 1, top: "45%", height: "10%",
-            background: theme === "dark" ? "rgba(255,255,255,0.25)" : "rgba(0,0,0,0.2)",
-          }}
-        />
       </div>
       {dragOver && (
         <div className="absolute inset-0 bg-accent/10 flex items-center justify-center pointer-events-none z-10">
